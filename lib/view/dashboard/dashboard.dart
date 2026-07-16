@@ -68,19 +68,11 @@ class _DashboardState extends State<Dashboard> {
       String version = packageInfo.version;
       String buildNumber = packageInfo.buildNumber;
 
-      print('App Name: $appName');
-      print('Version: $version');
-      print('Build Number: $buildNumber');
-      print(
-        ' "where is problem":${vendorProfile?.isVideoCallAvailable ?? false}',
-      );
-
       Repository()
           .updateProfile({"fcmToken": token, "appVersion": version}, [])
           .then((value) {
             context.read<DashboardBloc>().add(GetDashboardDataEvent());
-            _fetchVendorDetails(); // Refresh local state after updating token
-            log("update fcmToken successfully $value");
+            _fetchVendorDetails();
           });
     });
   }

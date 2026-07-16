@@ -13,10 +13,13 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     on<NotificationIncreaseEvent>(onNotificationIncrease);
     on<NotificationDecreaseEvent>(onNotificationDecrease);
     on<NotificationResetEvent>(onNotificationReset);
+    on<NotificationResetAllEvent>(onNotificationResetAll);
   }
 
   void onNotificationIncrease(
-      NotificationIncreaseEvent event, Emitter<NotificationState> emit) async {
+    NotificationIncreaseEvent event,
+    Emitter<NotificationState> emit,
+  ) async {
     // counter = counter + 1;
     // log('Notification Data : ${event.mData}');
     // // log('Notification Data : ${(event.mData).runtimeType}');
@@ -32,21 +35,26 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
   }
 
   void onNotificationDecrease(
-      NotificationDecreaseEvent event, Emitter<NotificationState> emit) async {
+    NotificationDecreaseEvent event,
+    Emitter<NotificationState> emit,
+  ) async {
     // counter = counter - 1;
     // emit(NotificationUpdateState(counter, ''));
     final userId = event.userId;
     if (userId.isEmpty || !_notificationCountMap.containsKey(userId)) return;
 
-    _notificationCountMap[userId] =
-        (_notificationCountMap[userId]! - 1).clamp(0, double.infinity).toInt();
+    _notificationCountMap[userId] = (_notificationCountMap[userId]! - 1)
+        .clamp(0, double.infinity)
+        .toInt();
 
     log('Decreased: ${_notificationCountMap[userId]} for userId: $userId');
     emit(NotificationUpdateState(Map.from(_notificationCountMap)));
   }
 
   void onNotificationReset(
-      NotificationResetEvent event, Emitter<NotificationState> emit) async {
+    NotificationResetEvent event,
+    Emitter<NotificationState> emit,
+  ) async {
     // counter = 0;
     // emit(NotificationUpdateState(counter, ''));
 
@@ -57,6 +65,15 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     _notificationCountMap.remove(userId);
 
     log('Reset: 0 for userId: $userId');
+    emit(NotificationUpdateState(Map.from(_notificationCountMap)));
+  }
+
+  void onNotificationResetAll(
+    NotificationResetAllEvent event,
+    Emitter<NotificationState> emit,
+  ) async {
+    _notificationCountMap.clear();
+    log('Reset all notifications');
     emit(NotificationUpdateState(Map.from(_notificationCountMap)));
   }
 }

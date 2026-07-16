@@ -15,6 +15,7 @@ class MainActivity  : FlutterActivity(){
         private const val LOGIN_SERVICE_CHANNEL = "login_service_channel" // Flutter → Android
         private const val CALL_CHANNEL = "com.bookmyastro.app.channel"   // CallService
         private const val SERVICE_CHANNEL = "com.astro.hanumanta/service"      // MyService
+        private const val RINGTONE_CHANNEL = "com.astro.hanumanta/ringtone"   // Native Ringtone
     }
 
     private var loginChannel: MethodChannel? = null
@@ -74,6 +75,33 @@ class MainActivity  : FlutterActivity(){
                         stopService(Intent(this, MyService::class.java))
                         Log.d("MainActivity", "MyService stopped")
                         result.success("MyService stopped")
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // -------------------------------
+        // 3️⃣ Native Ringtone Channel
+        // -------------------------------
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, RINGTONE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "playRingtone" -> {
+                        val intent = Intent(applicationContext, RingtoneService::class.java).apply {
+                            action = RingtoneService.ACTION_PLAY
+                        }
+                        applicationContext.startService(intent)
+                        result.success(true)
+                    }
+                    "stopRingtone" -> {
+                        val intent = Intent(applicationContext, RingtoneService::class.java).apply {
+                            action = RingtoneService.ACTION_STOP
+                        }
+                        applicationContext.startService(intent)
+                        result.success(true)
+                    }
+                    "isRinging" -> {
+                        result.success(RingtoneHelper.isRinging())
                     }
                     else -> result.notImplemented()
                 }

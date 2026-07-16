@@ -76,7 +76,7 @@ class LoginHoursService : Service() {
 
         Log.d("LoginHoursService", "📤 Sending login hours: $jsonBody")
 
-        val url = "https://bookmyastro.bookmyastro.co.in/api/vendor/login-histories"
+        val url = "https://app.astromukti.com/api/vendor/login-histories"
         val queue = Volley.newRequestQueue(this)
 
         val request = object : StringRequest(

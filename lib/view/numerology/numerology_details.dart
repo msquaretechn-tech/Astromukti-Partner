@@ -53,8 +53,7 @@ class _NumerologyDetailsState extends State<NumerologyDetails> {
     };
 
     Map<String, String> headers = {
-      'Authorization':
-          'Basic ${base64Encode(utf8.encode('${AppUrl.apiKey}:${AppUrl.apiSecret}'))}',
+      'x-astrologyapi-key': AppUrl.apiSecret,
       'Content-Type': 'application/json',
     };
 

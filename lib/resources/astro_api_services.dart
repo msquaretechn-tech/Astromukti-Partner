@@ -622,10 +622,12 @@ class AstroApiServices {
   Future<dynamic> currentDasha(Map<String, dynamic> formData) async {
     String apiUrl = 'https://json.astrologyapi.com/v1/current_vdasha_all';
 
-    log("url : $apiUrl");
+    log("url current dasha : $apiUrl");
 
     Map<String, String> headers = {
-      'x-astrologyapi-key': 'Basic ${base64Encode(utf8.encode('${AppUrl.apiKey}:${AppUrl.apiSecret}'))}',
+      // 'x-astrologyapi-key':
+      //     'Basic ${base64Encode(utf8.encode('${AppUrl.apiKey}:${AppUrl.apiSecret}'))}',
+      'x-astrologyapi-key': AppUrl.apiSecret,
       'Content-Type': 'application/json',
     };
 

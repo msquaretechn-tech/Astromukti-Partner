@@ -114,8 +114,9 @@ class _KundliDetailsState extends State<KundliDetails>
     setState(() {
       currentDasha = value ?? [];
     });
-    log("ddddddd:$currentDasha");
+
   }
+
   void loadMajorDasha() async {
     var value = await AstroApiServices().getMahaDasha(widget.inputData);
     setState(() {
@@ -929,6 +930,8 @@ class _KundliDetailsState extends State<KundliDetails>
       itemCount: currentDasha.length,
       itemBuilder: (context, index) {
         var dasha = currentDasha[index];
+
+        log("current dasha is open");
 
         return Container(
           margin: EdgeInsets.all(8),

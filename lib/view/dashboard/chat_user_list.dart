@@ -1,7 +1,8 @@
-import 'package:flutter/foundation.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:astro_mukti/utils/utils.dart';
 
 import '../../bloc/notification/notification_bloc.dart';
@@ -12,7 +13,6 @@ import '../../resources/resources.dart';
 import '../widgets/chat_ringtone.dart';
 import 'chat_page.dart';
 
-// final RingtonePlayer ringtonePlayer = RingtonePlayer();
 
 class ChatUserList extends StatefulWidget {
   const ChatUserList({super.key});
@@ -76,32 +76,25 @@ class _ChatUserListState extends State<ChatUserList> {
               int userCounter = 0;
               if (state is NotificationUpdateState) {
                 userCounter =
-                    state.userCounters["${data['admin']["_id"]}"] ??
-                        0;
+                    state.userCounters["${data['admin']["_id"]}"] ?? 0;
               }
 
               return InkWell(
                 borderRadius: BorderRadius.circular(12),
                 onTap: () async {
-                  if (userCounter == 0) {
-                    Fluttertoast.showToast(
-                      msg: "User Inactive",
-                      backgroundColor:
-                      Resources.colors.buttonColor,
-                    );
-                    return;
-                  }
-
                   final vendorId = PrefService().getRegId();
-                  final v = await Repository().getAvailability(
-                    vendorId,
-                  );
+                  final v = await Repository().getAvailability(vendorId);
 
-                  if (v['isChatAvailable'] == true ||
-                      v["chatGroupId"] ==
-                          data["admin"]["_id"]) {
+                  final bool isActiveChatWithThisUser =
+                      v['isChatAvailable'] == false &&
+                      v["chatGroupId"] == data["admin"]["_id"];
+
+                  // Badge counter > 0 means a notification came for this user
+                  final bool hasNewChatNotification = userCounter > 0;
+
+                  if (isActiveChatWithThisUser) {
+                    // Re-enter existing active session
                     await ChatRingTone().stopRingtone();
-
                     Navigator.push(
                       context,
                       MaterialPageRoute(
@@ -111,11 +104,53 @@ class _ChatUserListState extends State<ChatUserList> {
                         ),
                       ),
                     );
+                  } else if (hasNewChatNotification) {
+                    // Read chat_ringing flag — true = request is still incoming
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.reload();
+                    final bool isRinging = prefs.getBool('chat_ringing') ?? false;
+
+                    if (v['isChatAvailable'] == true && isRinging) {
+                      // Active incoming request — accept it
+                      await ChatRingTone().stopRingtone();
+                      await prefs.setBool('chat_ringing', false);
+                      if (context.mounted) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatPage(
+                              userDetails: data['admin'],
+                              chatId: data["_id"],
+                            ),
+                          ),
+                        );
+                      }
+                    } else if (v['isChatAvailable'] == false) {
+                      // Busy with a different user's session
+                      Fluttertoast.showToast(
+                        msg: "You are already in a chat session",
+                        textColor: Resources.colors.blackColor,
+                        backgroundColor: Resources.colors.buttonColor,
+                      );
+                    } else {
+                      // isChatAvailable=true but not ringing → chat already ended
+                      // Clear the stale badge
+                      if (context.mounted) {
+                        context.read<NotificationBloc>().add(
+                          NotificationResetEvent("${data['admin']["_id"]}"),
+                        );
+                      }
+                      Fluttertoast.showToast(
+                        msg: "Chat session has ended",
+                        textColor: Resources.colors.blackColor,
+                        backgroundColor: Resources.colors.buttonColor,
+                      );
+                    }
                   } else {
                     Fluttertoast.showToast(
-                      msg: "You can chat only once at a time",
-                      backgroundColor:
-                      Resources.colors.buttonColor,
+                      msg: "User Inactive",
+                      textColor: Resources.colors.blackColor,
+                      backgroundColor: Resources.colors.buttonColor,
                     );
                   }
                 },

@@ -76,10 +76,6 @@
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
 
-            <meta-data
-                android:name="com.google.firebase.messaging.default_notification_channel_id"
-                android:value="astro" />
-
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -90,6 +86,10 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="bma1" />
 
         <!-- ================= SERVICES ================= -->
 
@@ -132,6 +132,12 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
+        <!-- Native Ringtone Service — NOT a foreground service, auto-stops on force kill -->
+        <service
+            android:name=".RingtoneService"
+            android:exported="false"
+            android:stopWithTask="true" />
+
         <!-- ================= RECEIVER ================= -->
 
         <receiver
@@ -139,6 +145,16 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Ringtone Broadcast Receiver — receives play/stop from Flutter background isolate -->
+        <receiver
+            android:name=".RingtoneBroadcastReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.jyotishastro.PLAY_RINGTONE" />
+                <action android:name="com.jyotishastro.STOP_RINGTONE" />
             </intent-filter>
         </receiver>
 

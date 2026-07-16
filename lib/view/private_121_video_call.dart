@@ -14,6 +14,7 @@ import '../repository/repository.dart';
 import '../resources/resources.dart';
 import '../resources/string.dart';
 import '../routes/routes_name.dart';
+import '../services/notification_service.dart';
 import 'kundli/kundli.dart';
 
 class Private121VideoCall extends StatefulWidget {
@@ -50,6 +51,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       "isVideoCallAvailable": false,
       "isNowAvailable": false
     }, files: const []));
+    NotificationService.dismissNotifications();
   }
 
   Future<void> _initAgoraLive() async {
@@ -133,6 +135,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       "isNowAvailable": true,
       "isOnline": true,
     }, []);
+    NotificationService.dismissNotifications();
   }
 
   @override

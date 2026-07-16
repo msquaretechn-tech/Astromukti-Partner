@@ -18,3 +18,5 @@ class NotificationResetEvent extends NotificationEvent {
   final String userId;
   NotificationResetEvent(this.userId);
 }
+
+class NotificationResetAllEvent extends NotificationEvent {}

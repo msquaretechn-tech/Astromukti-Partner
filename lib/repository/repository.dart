@@ -1153,4 +1153,27 @@ class Repository {
       rethrow;
     }
   }
+
+  Future<dynamic> endChatSession(String chatId) async {
+    try {
+      final response = await _apiServices.postApiResponse(
+        "${AppUrl.chatEndPoint}/end/$chatId",
+        {},
+      );
+
+      if (response != null) {
+        await Repository().updateProfile({
+          "isChatAvailable": true,
+          "isAudioCallAvailable": true,
+          "isVideoCallAvailable": true,
+          "isNowAvailable": true,
+          "isOnline": true,
+        }, []);
+      }
+
+      return response;
+    } catch (e) {
+      rethrow;
+    }
+  }
 }

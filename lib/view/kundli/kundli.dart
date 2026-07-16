@@ -92,9 +92,8 @@ class _ZodiacSignState extends State<ZodiacSign> {
     String url = "https://json.astrologyapi.com/v1/geo_details";
     Map<String, dynamic> requestBody = {"place": allCity, "maxRows": 7};
     Map<String, String> headers = {
-      'Authorization':
-          'Basic ${base64Encode(utf8.encode('${AppUrl.apiKey}:${AppUrl.apiSecret}'))}',
-      'Content-Type': 'application/json'
+      'x-astrologyapi-key': AppUrl.apiSecret,
+      'Content-Type': 'application/json',
     };
     try {
       final response = await http.post(

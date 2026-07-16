@@ -7,8 +7,9 @@ class CallTimerInitial extends CallTimerState {}
 
 class CallStartState extends CallTimerState {
   final String time;
+  final String? remainingTime;
 
-  CallStartState({required this.time});
+  CallStartState({required this.time, this.remainingTime});
 }
 
 class CallEndState extends CallTimerState {

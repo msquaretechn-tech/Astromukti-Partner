@@ -139,7 +139,11 @@ class _DrawerPageState extends State<DrawerPage> {
               padding: const EdgeInsets.all(4.0),
               child: Row(
                 children: [
-                  Icon(Icons.add_circle_outline_sharp, size: 20, color: Resources.colors.blackColor),
+                  Icon(
+                    Icons.add_circle_outline_sharp,
+                    size: 20,
+                    color: Resources.colors.blackColor,
+                  ),
                   SizedBox(width: 10),
                   Text(
                     "Add Expertise",
@@ -215,7 +219,10 @@ class _DrawerPageState extends State<DrawerPage> {
               padding: const EdgeInsets.all(4.0),
               child: Row(
                 children: [
-                  Icon(Icons.access_time_rounded, color: Resources.colors.blackColor),
+                  Icon(
+                    Icons.access_time_rounded,
+                    color: Resources.colors.blackColor,
+                  ),
                   SizedBox(width: 10),
                   Text(
                     "Login Hours",
@@ -326,6 +333,9 @@ class _DrawerPageState extends State<DrawerPage> {
                   .updateProfile({
                     "isOnline": false,
                     "isNowAvailable": false,
+                    "isAudioCallAvailable": false,
+                    "isChatAvailable": false,
+                    "isVideoCallAvailable": false,
                   }, [])
                   .then((value) {
                     log("value:$value");

@@ -1,24 +1,21 @@
+
 import 'dart:async';
 import 'dart:developer';
 import 'package:agora_chat_sdk/agora_chat_sdk.dart';
+import 'package:astro_mukti/repository/chat_log_repo.dart';
 import 'package:flutter/foundation.dart';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
-
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:go_router/go_router.dart';
-import 'package:astro_mukti/utils/sound_recorder.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-
 import 'package:intl/intl.dart';
-
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:just_audio/just_audio.dart' show PlayerState, ProcessingState;
-
 import '../../bloc/auth/auth_bloc.dart';
 import '../../bloc/chat_timer/chat_timer_bloc.dart';
 import '../../bloc/count_down_timer.dart';
@@ -35,9 +32,11 @@ import '../../resources/string.dart';
 import '../../routes/routes_name.dart';
 import '../../services/notification_service.dart';
 import '../../utils/global_player.dart';
+import '../../utils/sound_recorder.dart';
 import '../../utils/utils.dart';
 import '../../utils/voice_message.dart';
 import '../kundli/kundli.dart';
+import '../widgets/chat_ringtone.dart';
 import 'image_zoomer.dart';
 
 // final ChatRingTone ringtonePlayer = ChatRingTone();
@@ -50,7 +49,8 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
+  String _currentAppState = "foreground";
   String myLog = "Private121Chat myLog : ";
   ChatClient client = ChatClient.getInstance;
   final TextEditingController _controller = TextEditingController();
@@ -64,56 +64,290 @@ class _ChatPageState extends State<ChatPage> {
   late String birthPlace;
   late String gender;
   late String name;
+  late String walletAmountme;
   late bool isNewUser;
   bool _isConnecting = true;
+  StreamSubscription? _chatTimerSub;
+  bool _isExiting = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    ChatLoggerRepo().init();
+    PrefService.setBool('chat_ringing', false);
+    ChatRingTone().stopRingtone();
+    NotificationService.dismissNotifications();
     dob = widget.userDetails["dob"] ?? "";
+    walletAmountme = widget.userDetails["walletAmount"].toString();
     dobTime = widget.userDetails["dobTime"] ?? "";
     birthPlace = widget.userDetails["birthPlace"] ?? "";
     gender = widget.userDetails["gender"] ?? "";
-    name =
-        "${widget.userDetails["name"] ?? ""} ${widget.userDetails["lastName"] ?? ""}";
     var raw = widget.userDetails["isNewUser"];
-    log("why coming : $raw");
+    log("why coming : $walletAmountme");
     isNewUser = raw == true || raw == "true";
 
-    Repository().updateProfile({
+    // ✅ Listen for ChatEndState immediately — before any async sign-in completes.
+    // This ensures we don't miss FCM-triggered ChatEndState on second chat sessions.
+    _chatTimerSub = context.read<ChatTimerBloc>().stream.listen((state) {
+      if (state is ChatEndState) {
+        if (state.userId == widget.userDetails["_id"]) {
+          log("[ChatPage] ChatEndState received for current user: ${state.userId} — exiting.");
+          _cleanupAndExit();
+        }
+      }
+    });
+
+    // 🚀 NEW: Log that chat was picked/opened
+    _logChatEvent(
+      eventType: "CHAT_PICKED",
+      message: "Chat joined/picked from notification or tab",
+    );
+
+    _initializeChat();
+  }
+
+  // it clean everything
+  // void _cleanupAndExit() {
+  //   if (_isExiting) return;
+  //   _isExiting = true;
+  //   _countdownTimer?.cancel();
+  //   _countdownTimer = null;
+  //   if (mounted) {
+  //     context.read<CountDownTimerBloc>().add(StopTimer());
+  //     log(" Resetting notifications for user: ${widget.userDetails["_id"]}");
+  //
+  //     context.read<NotificationBloc>().add(
+  //       NotificationResetEvent("${widget.userDetails["_id"]}"),
+  //     );
+  //     _signOut();
+  //     (navigationKey.currentContext ?? context).goNamed(
+  //       RoutesName.navigationScreen,
+  //       extra: 0,
+  //     );
+  //     log(" Step what happen : ");
+  //     Fluttertoast.showToast(
+  //       msg: "Chat session ended.",
+  //       backgroundColor: Colors.red,
+  //     );
+  //     NotificationService.dismissNotifications();
+  //     log(" Step->2 what happen : ");
+  //   } else {
+  //     log("Widget not mounted, cleanup skipped");
+  //   }
+  // }
+  void _cleanupAndExit() {
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+    if (mounted) {
+      context.read<CountDownTimerBloc>().add(StopTimer());
+      log(" Resetting notifications for user: ${widget.userDetails["_id"]}");
+
+      context.read<NotificationBloc>().add(
+        NotificationResetEvent("${widget.userDetails["_id"]}"),
+      );
+      _signOut();
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      (navigationKey.currentContext ?? context).goNamed(RoutesName.navigationScreen, extra: 0);
+
+      Fluttertoast.showToast(
+        msg: "Chat session ended.",
+        backgroundColor: Colors.red,
+      );
+      NotificationService.dismissNotifications();
+    } else {
+      log("Widget not mounted, cleanup skipped");
+    }
+  }
+  void _sendEndChatCMD() async {
+
+    try {
+      // 1. Send invisible CMD signal via Agora
+      var cmdMsg = ChatMessage.createCmdSendMessage(
+        targetId: _remoteChatId!,
+        action: "END_CHAT_SESSION",
+      );
+
+      await client.chatManager.sendMessage(cmdMsg);
+    } catch (e) {
+      log(" Failed to send CMD message: $e");
+    }
+
+    try {
+      log(" Calling backend endChatSession API for chatId: ${widget.chatId}");
+
+      // 2. Notify backend to mark session closed
+      await _repository.endChatSession(widget.chatId);
+
+    } catch (e) {
+      log("❌ endChatSession API failed: $e");
+    }
+
+    _logChatEvent(
+      eventType: "CHAT_ENDED_BY_ASTROLOGER",
+      message: "Astrologer manually ended the chat session",
+    );
+
+    try {
+
+
+      // 3. Backup push notification
+      await NotificationService.sendNotification(
+        widget.userDetails["fcmToken"],
+        "Chat Ended",
+        "Astrologer has ended the chat",
+        {'userId': _localUserId},
+      );
+
+      if (kDebugMode) {
+        print("Fallback notification sent");
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print("Notification send failed: $e");
+      }
+    }
+  }
+
+  void _startChatCMD() async {
+
+    try {
+      // 1. Send invisible CMD signal via Agora
+      var cmdMsg = ChatMessage.createCmdSendMessage(
+        targetId: _remoteChatId!,
+        action: "START_CHAT_SESSION",
+      );
+
+      await client.chatManager.sendMessage(cmdMsg);
+    } catch (e) {
+      log(" Failed to send CMD message: $e");
+    }
+
+
+    log(" Calling backend endChatSession API for chatId: ${widget.chatId}");
+
+    // // 2. Notify backend to mark session closed
+    // await _repository.endChatSession(widget.chatId)
+
+  }
+  // void _sendEndChatCMD() async {
+  //   try {
+  //     // 1. Send invisible CMD signal via Agora
+  //     var cmdMsg = ChatMessage.createCmdSendMessage(
+  //       targetId: _remoteChatId!,
+  //       action: "END_CHAT_SESSION",
+  //     );
+  //
+  //     await client.chatManager.sendMessage(cmdMsg);
+  //   } catch (e) {
+  //     log(" Failed to send CMD message: $e");
+  //   }
+  //
+  //   try {
+  //     log(" Calling backend endChatSession API for chatId: ${widget.chatId}");
+  //
+  //     // 2. Notify backend to mark session closed
+  //     await _repository.endChatSession(widget.chatId);
+  //   } catch (e) {
+  //     log("❌ endChatSession API failed: $e");
+  //   }
+  //
+  //   _logChatEvent(
+  //     eventType: "CHAT_ENDED_BY_ASTROLOGER",
+  //     message: "Astrologer manually ended the chat session",
+  //   );
+  //
+  //   try {
+  //     // 3. Backup push notification
+  //     await NotificationService.sendNotification(
+  //       widget.userDetails["fcmToken"],
+  //       "Chat Ended",
+  //       "Astrologer has ended the chat",
+  //       {'userId': _localUserId},
+  //     );
+  //
+  //     log("✅ Fallback notification sent");
+  //   } catch (e) {
+  //     log("❌ Notification send failed: $e");
+  //   }
+  // }
+  //
+  // void _startChatCMD() async {
+  //   try {
+  //     // 1. Send invisible CMD signal via Agora
+  //     var cmdMsg = ChatMessage.createCmdSendMessage(
+  //       targetId: _remoteChatId!,
+  //       action: "START_CHAT_SESSION",
+  //     );
+  //
+  //     await client.chatManager.sendMessage(cmdMsg);
+  //   } catch (e) {
+  //     log(" Failed to send CMD message: $e");
+  //   }
+  //
+  //   log(" Calling backend endChatSession API for chatId: ${widget.chatId}");
+  //
+  //   // // 2. Notify backend to mark session closed
+  //   // await _repository.endChatSession(widget.chatId)
+  // }
+
+  void _checkAndSendWelcomeMessage() async {
+    // 1. Double check all conditions to prevent duplicates
+    if (_welcomeMessageSent) return;
+    if (profile == null) return;
+    if (!mounted) return;
+
+    bool wasSentPersistent =
+        PrefService.getBool('welcome_sent_${widget.chatId}') ?? false;
+    if (wasSentPersistent) {
+      setState(() {
+        _welcomeMessageSent = true;
+      });
+      return;
+    }
+
+    // 2. Mark as sent IMMEDIATELY to block other concurrent triggers
+    setState(() {
+      _welcomeMessageSent = true;
+    });
+    PrefService.setBool('welcome_sent_${widget.chatId}', true);
+
+    // 3. Send the message
+    _messageContent =
+        "Hii, I am ${profile!.name} ${profile!.lastName} welcome you to Astro Mukti. How Can I help you?";
+    _startChatCMD();
+    if (_messageContent!.isNotEmpty) {
+      await _sendMessage();
+      if (mounted) {
+        _controller.clear();
+      }
+    }
+  }
+
+  Future<void> _initializeChat() async {
+
+    await Repository().updateProfile({
       "isChatAvailable": false,
       "chatGroupId": widget.userDetails["_id"],
       "isNowAvailable": false,
     }, []);
 
-    _initializeChat();
-  }
+    // 2. Fetch necessary data sequentially to ensure state is ready before listeners fire
+    await Future.wait([_fetchVendorDetails(), _fetchPreviousMessages()]);
 
-  Future<void> _initializeChat() async {
-    // Parallelize all initial fetches
-    await Future.wait([
-      _initSDK(),
-      _fetchVendorDetails(),
-      _fetchPreviousMessages(),
-    ]);
+    // 3. Add listeners
+    _addChatListener();
+
+    // 4. Parallelize remaining initial fetches
+    await Future.wait([_initSDK(), _fetchCustomerDetails()]);
 
     if (mounted) {
       context.read<AuthBloc>().add(AuthGetVendorProfileEvent());
       setState(() {
         _isConnecting = false;
       });
-      // Scroll to bottom after connections are established and messages loaded
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-    }
-  }
-
-  void _scrollToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
     }
   }
 
@@ -123,221 +357,76 @@ class _ChatPageState extends State<ChatPage> {
 
   // user details get
   Widget buildUserDetailsMessage() {
-    return InkWell(
-      onTap: () {
-        userCallDetails();
-      },
-      child: Container(
-        margin: const EdgeInsets.all(5),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.green.shade50,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(''' DOB: $dob
-Time: $dobTime
-Place: $birthPlace
-Gender: $gender
-''', style: const TextStyle(fontSize: 16, height: 1.5)),
+    return Container(
+      margin: const EdgeInsets.all(5),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.green.shade50,
+        borderRadius: BorderRadius.circular(12),
       ),
+      child: Text(''' DOB: $dob
+Time: $dobTime
+ Place: $birthPlace
+ Gender: $gender
+''', style: const TextStyle(fontSize: 16, height: 1.5)),
     );
   }
 
-  void userCallDetails() {
-    showDialog(
-      barrierDismissible: false,
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Text(
-                        " Birth Details",
-                        style: Resources.styles.kTextStyle26(Colors.black),
-                      ),
-                    ),
-                    const SizedBox(width: 15),
-                    CircleAvatar(
-                      backgroundColor: Resources.colors.blackColor,
-                      child: IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white),
-                        onPressed: () {
-                          Navigator.pop(context);
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Text(
-                      "Name     : ",
-                      style: Resources.styles.kTextStyle14B(Colors.black),
-                    ),
-                    Text(
-                      name,
-                      style: Resources.styles.kTextStyle14B(Colors.grey),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Text(
-                      "Gender : ",
-                      style: Resources.styles.kTextStyle14B(Colors.black),
-                    ),
-                    Text(
-                      gender,
-                      style: Resources.styles.kTextStyle14B(Colors.grey),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Text(
-                      "Date of Birth : ",
-                      style: Resources.styles.kTextStyle14B(Colors.black),
-                    ),
-                    Text(
-                      dob,
-                      style: Resources.styles.kTextStyle14B(Colors.grey),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Text(
-                      "Time of Birth : ",
-                      style: Resources.styles.kTextStyle14B(Colors.black),
-                    ),
-                    Text(
-                      dobTime,
-                      style: Resources.styles.kTextStyle14B(Colors.grey),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Text(
-                      "Place of Birth :",
-                      style: Resources.styles.kTextStyle14B(Colors.black),
-                    ),
-                    Text(
-                      " $birthPlace",
-                      style: Resources.styles.kTextStyle14B(Colors.grey),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 15),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        onTap: () {
-                          Navigator.pop(context);
-                        },
-                        child: Container(
-                          height: 40,
-                          alignment: Alignment.center,
-                          width: MediaQuery.of(context).size.width * .4,
-                          decoration: BoxDecoration(
-                            color: Colors.red,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            "Cancel ",
-                            style: Resources.styles.kTextStyle16B(Colors.black),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 15),
-                    InkWell(
-                      onTap: () async {
-                        EasyLoading.show(
-                          status: 'loading...',
-                          dismissOnTap: false,
-                          maskType: EasyLoadingMaskType.clear,
-                        );
-                        try {
-                          // Fetch latitude and longitude from the city name (birthPlace)
-                          List<Location> locations = await locationFromAddress(
-                            birthPlace,
-                          );
-                          if (locations.isNotEmpty) {
-                            double latitude = locations[0].latitude;
-                            double longitude = locations[0].longitude;
-                            log("Latitude: $latitude, Longitude: $longitude");
-                            EasyLoading.dismiss();
-                            // Navigate to the next screen with the latitude and longitude
-                            if (context.mounted) {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => ZodiacSign(
-                                    dob: dob,
-                                    dot: dobTime,
-                                    dop: birthPlace,
-                                    name: name,
-                                    gender: gender,
-                                    latitude: latitude,
-                                    longitude: longitude,
-                                  ),
-                                ),
-                              );
-                            }
-                          } else {
-                            EasyLoading.dismiss();
-                            log("No locations found for the given address.");
-                          }
-                        } catch (e) {
-                          EasyLoading.dismiss();
-                          log("Error fetching location: $e");
-                        }
-                      },
-                      child: Container(
-                        height: 40,
-                        alignment: Alignment.center,
-                        width: MediaQuery.of(context).size.width * .4,
-                        decoration: BoxDecoration(
-                          color: Resources.colors.greenColor,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          "Open Kundli",
-                          style: Resources.styles.kTextStyle16B(Colors.white),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _currentAppState = "background";
+      _logChatEvent(eventType: "BACKGROUND", message: "User minimized the app");
+    } else if (state == AppLifecycleState.resumed) {
+      _currentAppState = "foreground";
+      _logChatEvent(eventType: "FOREGROUND", message: "User returned to app");
+      if (!isConnected) {
+        _signIn();
+      }
+    }
+  }
+
+  Future<void> _logChatEvent({
+    required String eventType,
+    required String message,
+    int retryCount = 0,
+  }) async {
+    ChatLoggerRepo().logEvent(
+      userId: _localUserId.isNotEmpty ? _localUserId : PrefService().getRegId(),
+      vendorId: widget.userDetails["_id"] ?? "unknown",
+      sessionId: widget.chatId,
+      eventType: eventType,
+      message: message,
+      appState: _currentAppState,
+      isConnected: isConnected,
+      retryCount: retryCount,
     );
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    client.chatManager.removeEventHandler(
+      Resources.strings.chatHandlerUniqueId,
+    );
+    client.removeConnectionEventHandler(Resources.strings.chatHandlerUniqueId);
+    client.chatManager.removeMessageEvent(
+      Resources.strings.chatHandlerUniqueId,
+    );
+    _countdownTimer?.cancel();
+    _chatTimerSub?.cancel();
+    _scrollController.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   void deactivate() {
-    print("deactivate ${context.read<ChatTimerBloc>()}");
+    if (kDebugMode) {
+      print("deactivate ${context.read<ChatTimerBloc>()}");
+    }
     super.deactivate();
   }
 
@@ -348,9 +437,14 @@ Gender: $gender
   bool isConnected = false;
   String? _messageContent, _remoteChatId = "";
   final List<Map<String, dynamic>> _chatList = [];
+  Map<String, dynamic>? _customerDetailsFromApi;
+  bool _isSigningIn = false;
+  final int _sessionStartTime = DateTime.now().millisecondsSinceEpoch;
 
   Future<void> _initSDK() async {
-    print("$myLog _initSDK");
+    if (kDebugMode) {
+      print("$myLog _initSDK");
+    }
     ChatOptions options = ChatOptions(
       appKey: AgoraConfig.appKey,
       autoLogin: true,
@@ -358,93 +452,307 @@ Gender: $gender
 
     await client.init(options);
     await client.startCallback();
+
+    // Check connection safely after initialization
+    try {
+      bool alreadyConnected = await client.isConnected();
+      if (alreadyConnected && mounted) {
+        setState(() {
+          isConnected = true;
+        });
+      }
+    } catch (e) {
+      _logChatEvent(
+        eventType: "SDK_ERROR",
+        message: "Error checking initial connection: $e",
+      );
+      if (kDebugMode) {
+        print("Error checking initial connection: $e");
+      }
+    }
+
     _localUserId = PrefService().getRegId();
     _remoteChatId = widget.userDetails["_id"];
-
-    // Register listeners immediately after initialization
-    _addChatListener();
 
     await _signIn();
   }
 
   Future<void> _signIn() async {
-    print("_localUserId $_localUserId");
-    print("_remoteChatId $_remoteChatId");
+    if (_isSigningIn) return;
+    _isSigningIn = true;
+
+    if (kDebugMode) {
+      print("_localUserId $_localUserId");
+    }
+    if (kDebugMode) {
+      print("_remoteChatId $_remoteChatId");
+    }
 
     try {
-      // 1. Check connection and login state
       bool isLoggedIn = await client.isLoginBefore();
-      
-      // Get a fresh token
-      var agoraToken = await Repository().generateChatToken(_localUserId);
-      
+      bool loginSuccess = isLoggedIn;
+
       if (!isLoggedIn) {
-        await client.loginWithToken(_localUserId, agoraToken['userToken']);
-      } else {
-        // Even if caught as "logged in", manually refreshing token session is safer
-        try {
-          await client.renewAgoraToken(agoraToken['userToken']);
-        } catch (e) {
-          log("Renew token failed, re-logging in: $e");
-          await client.logout(true);
-          await client.loginWithToken(_localUserId, agoraToken['userToken']);
+        var agoraToken = await Repository().generateChatToken(_localUserId);
+        if (kDebugMode) {
+          print("agoraToken:$agoraToken");
+        }
+
+        int retryCount = 0;
+
+        while (retryCount < 3) {
+          try {
+            await client.loginWithToken(_localUserId, agoraToken['userToken']);
+
+            if (kDebugMode) {
+              print("$myLog login succeed, userId: $_localUserId");
+            }
+            loginSuccess = true;
+            break;
+          } on ChatError catch (e) {
+            if (kDebugMode) {
+              print(
+                "$myLog login failed (attempt ${retryCount + 1}), code: ${e.code}",
+              );
+            }
+
+            if (e.code == 204) {
+              retryCount++;
+
+              _logChatEvent(
+                eventType: "LOGIN_RETRY",
+                message:
+                    "Agora user not found (204), retrying in 3s... (Attempt $retryCount)",
+                retryCount: retryCount,
+              );
+
+              //  refresh token before last attempt
+              if (retryCount == 2) {
+                agoraToken = await Repository().generateChatToken(_localUserId);
+                if (kDebugMode) {
+                  print("$myLog Token refreshed");
+                }
+              }
+
+              await Future.delayed(const Duration(seconds: 3));
+            } else if (e.code == 200) {
+              // ✅ already logged in (IMPORTANT FIX)
+              if (kDebugMode) {
+                print("$myLog Already logged in");
+              }
+              loginSuccess = true;
+              break;
+            } else {
+              rethrow;
+            }
+          }
+        }
+
+        // ❌ stop if login failed
+        if (!loginSuccess) {
+          _logChatEvent(
+            eventType: "LOGIN_FAILED",
+            message: "Login failed after retries",
+          );
+          throw Exception("Agora login failed after retries");
         }
       }
 
-      // 2. Refresh profile
+      // ✅ ensure login success before continuing
+      if (!loginSuccess) return;
+
+      // 2. Fetch profile
       if (profile == null) {
         await _fetchVendorDetails();
       }
 
-      // 3. Complete setup
-      chatTimerSub = context.read<ChatTimerBloc>().stream.listen((state) {});
-      await _fetchPreviousMessages();
-      
-      dob = "${widget.userDetails["dob"] ?? ""}";
-      dobTime = "${widget.userDetails["dobTime"] ?? ""}";
-      birthPlace = "${widget.userDetails["birthPlace"] ?? ""}";
-      name = "${widget.userDetails["name"] ?? ""} ${widget.userDetails["lastName"] ?? ""}";
-      gender = "${widget.userDetails["gender"] ?? ""}";
+      // 3. Setup listeners (chatTimerSub already set in initState)
+      if (!mounted) return;
 
-      // 4. Send welcome message if first time
-      if (!_welcomeMessageSent && profile != null && mounted) {
-        _messageContent = "Hii, I am ${profile!.name} ${profile!.lastName} welcome you to Astro Mukti. How Can I help you?";
-        if (_messageContent!.isNotEmpty) {
-          await _sendMessage();
-          _controller.clear();
-          setState(() {
-            _welcomeMessageSent = true;
-          });
-          _startCountdownTimer();
+      dob = "${widget.userDetails["dob"]}";
+      dobTime = "${widget.userDetails["dobTime"]}";
+      birthPlace = "${widget.userDetails["birthPlace"]}";
+      name = "${widget.userDetails["name"]} ${widget.userDetails["lastName"]}";
+      gender = "${widget.userDetails["gender"]}";
+
+      log(
+        "Kundli Data: dob=$dob, dobTime=$dobTime, birthPlace=$birthPlace, name=$name, gender=$gender",
+      );
+
+      // 4. Welcome message
+      _checkAndSendWelcomeMessage();
+
+      _logChatEvent(
+        eventType: "LOGIN_SUCCESS",
+        message: "Token fetched and logged in to Agora",
+      );
+    } on ChatError catch (e) {
+      //  only handle real errors here now
+      if (e.code == 200) {
+        if (kDebugMode) {
+          print("$myLog Already logged in (outer catch)");
         }
+
+        if (mounted) {
+          setState(() {
+            isConnected = true;
+          });
+        }
+        return;
+      }
+
+      _logChatEvent(
+        eventType: "LOGIN_FAILED",
+        message: "ChatError: ${e.description}",
+      );
+
+      if (kDebugMode) {
+        print("Error in _signIn: $e");
+      }
+
+      if (mounted) {
+        Utils.snackBar("Error in _signIn: $e", context);
       }
     } catch (e) {
-      print("Error in _signIn: $e");
-      // If unauthorized, clear prefs and force login screen (handled by NetworkApiServices usually)
+      _logChatEvent(eventType: "LOGIN_FAILED", message: e.toString());
+
+      if (kDebugMode) {
+        print("Error in _signIn: $e");
+      }
+
+      if (mounted) {
+        Utils.snackBar("Error in _signIn: $e", context);
+      }
+    } finally {
+      _isSigningIn = false;
     }
   }
-
-  void _signOut() async {
+  Future<void> _signOut() async {
     try {
-      await client.logout(true).then((value) {
-        if (context.read<ChatTimerBloc>() != null) {
-          // context.read<ChatTimerBloc>().add(ChatEndEvent());
-        } else {
-          print("ChatTimerBloc is not found in the context.");
-        }
-      });
+      // 1. Update profile status first
+      await Repository().updateProfile({
+        "isChatAvailable": true,
+        "isAudioCallAvailable": true,
+        "isVideoCallAvailable": true,
+        "isNowAvailable": true,
+        "isOnline": true,
+      }, []);
 
-      print("Sign-out succeeded.");
-    } on ChatError catch (e) {
-      print("Sign-out failed: code: ${e.code}, description: ${e.description}");
+      // Refresh local profile status
+      if (mounted) {
+        context.read<AuthBloc>().add(AuthGetVendorProfileEvent());
+      }
+
+      // 2. Attempt Agora logout
+      try {
+        // unbindToken: true ensures push notifications stop for this device
+        await client.logout(true);
+        if (kDebugMode) {
+          print("Sign-out from Agora succeeded.");
+        }
+      } on ChatError catch (e) {
+        if (kDebugMode) {
+          print(
+            "Sign-out from Agora failed: code: ${e.code}, description: ${e.description}",
+          );
+        }
+
+      }
+
+      // 3. Reset Local State & Blocs
+
+      final targetContext = navigationKey.currentContext ?? context;
+      if (targetContext.mounted) {
+        targetContext.read<NotificationBloc>().add(
+          NotificationResetEvent("${widget.userDetails["_id"]}"),
+        );
+        targetContext.read<ChatTimerBloc>().add(
+          ChatEndEvent(userId: widget.userDetails["_id"]),
+        );
+        PrefService.remove('welcome_sent_${widget.chatId}');
+      }
+
+      if (kDebugMode) {
+        print("Sign-out process completed.");
+      }
     } catch (e) {
-      print("An unexpected error occurred during sign-out: $e");
-      Utils.snackBar(
-        "An unexpected error occurred during sign-out: $e",
-        context,
+      if (kDebugMode) {
+        print("An unexpected error occurred during sign-out: $e");
+      }
+      if (mounted) {
+        Utils.snackBar("Sign-out error: $e", context);
+      }
+    } finally {
+      _logChatEvent(
+        eventType: "CHAT_ENDED",
+        message: "Chat session ended and user signed out",
       );
+      NotificationService.dismissNotifications();
     }
   }
+  // Future<void> _signOut() async {
+  //   try {
+  //     // 1. Update profile status first
+  //     await Repository().updateProfile({
+  //       "isChatAvailable": true,
+  //       "isAudioCallAvailable": true,
+  //       "isVideoCallAvailable": true,
+  //       "isNowAvailable": true,
+  //       "isOnline": true,
+  //     }, []);
+  //
+  //     // Refresh local profile status
+  //     if (mounted) {
+  //       context.read<AuthBloc>().add(AuthGetVendorProfileEvent());
+  //     }
+  //
+  //     // 2. Attempt Agora logout
+  //     try {
+  //       // unbindToken: true ensures push notifications stop for this device
+  //       await client.logout(true);
+  //       if (kDebugMode) {
+  //         print("Sign-out from Agora succeeded.");
+  //       }
+  //     } on ChatError catch (e) {
+  //       if (kDebugMode) {
+  //         print(
+  //           "Sign-out from Agora failed: code: ${e.code}, description: ${e.description}",
+  //         );
+  //       }
+  //       // Proceeding with local cleanup anyway
+  //     }
+  //
+  //     // 3. Reset Local State & Blocs
+  //     // Use navigationKey context if local context might be unmounted (e.g. after Navigator.pop)
+  //     final targetContext = navigationKey.currentContext ?? context;
+  //     if (targetContext.mounted) {
+  //       targetContext.read<NotificationBloc>().add(
+  //         NotificationResetEvent("${widget.userDetails["_id"]}"),
+  //       );
+  //       targetContext.read<ChatTimerBloc>().add(
+  //         ChatEndEvent(userId: widget.userDetails["_id"]),
+  //       );
+  //       PrefService.remove('welcome_sent_${widget.chatId}');
+  //     }
+  //
+  //     if (kDebugMode) {
+  //       print("Sign-out process completed.");
+  //     }
+  //   } catch (e) {
+  //     if (kDebugMode) {
+  //       print("An unexpected error occurred during sign-out: $e");
+  //     }
+  //     if (mounted) {
+  //       Utils.snackBar("Sign-out error: $e", context);
+  //     }
+  //   } finally {
+  //     _logChatEvent(
+  //       eventType: "CHAT_ENDED",
+  //       message: "Chat session ended and user signed out",
+  //     );
+  //     NotificationService.dismissNotifications();
+  //   }
+  // }
 
   Future<void> clearAllConversations() async {
     try {
@@ -453,9 +761,13 @@ Gender: $gender
       for (var convo in conversations) {
         await ChatClient.getInstance.chatManager.deleteConversation(convo.id);
       }
-      print('All chats cleared!');
+      if (kDebugMode) {
+        print('All chats cleared!');
+      }
     } catch (e) {
-      print('Error clearing all chats: $e');
+      if (kDebugMode) {
+        print('Error clearing all chats: $e');
+      }
     }
   }
 
@@ -465,7 +777,19 @@ Gender: $gender
     vendorDetailsModel = await Repository().getVendorDetail();
     previousMessages = await Repository().getTotalMessages(widget.chatId);
 
-    print("$myLog Previous messages : $previousMessages");
+    if (kDebugMode) {
+      print("$myLog Previous messages : $previousMessages");
+    }
+
+    // Clear list to avoid duplicates when returning to page
+    _chatList.clear();
+
+    // Check if welcome message was already sent for this chatId
+    bool wasSent =
+        PrefService.getBool('welcome_sent_${widget.chatId}') ?? false;
+    if (wasSent) {
+      _welcomeMessageSent = true;
+    }
 
     previousMessages!["data"].reversed.forEach((element) {
       _chatList.add({
@@ -476,12 +800,48 @@ Gender: $gender
     });
   }
 
+  Future<void> _fetchCustomerDetails() async {
+    try {
+      final String? userId = widget.userDetails["_id"];
+      if (userId != null) {
+        final profileData = await Repository().getUserProfile(userId);
+        if (mounted) {
+          setState(() {
+            _customerDetailsFromApi = profileData.toJson();
+          });
+          if (kDebugMode) {
+            print(
+              "$myLog Customer details fetched from API: $_customerDetailsFromApi",
+            );
+          }
+
+          // If we are already connected, try to start the timer with this new data
+          if (isConnected &&
+              profile != null &&
+              (_countdownTimer == null || !_countdownTimer!.isActive)) {
+            _startCountdownTimer();
+          }
+        }
+      }
+    } catch (e) {
+      log("Error fetching customer details: $e");
+    }
+  }
+
   Future<void> _sendMessage() async {
-    print("ccccccccccccccccccccccccccc");
+    if (kDebugMode) {
+      print("ccccccccccccccccccccccccccc");
+    }
     if (_remoteChatId == null || _messageContent == null) {
-      print(
-        "$myLog annot send message: Remote ID, content, or connection issue",
+      _logChatEvent(
+        eventType: "SYNC_FAILED",
+        message: "Cannot send message: Remote ID or content missing",
       );
+      if (kDebugMode) {
+        print(
+          "$myLog annot send message: Remote ID, content, or connection issue",
+        );
+      }
       return;
     }
     // setState(() {
@@ -503,48 +863,83 @@ Gender: $gender
         targetId: _remoteChatId!,
         content: finalMessage,
       );
-      print("$myLog sendMessage : $msg");
+      if (kDebugMode) {
+        print("$myLog sendMessage : $msg");
+      }
       await client.chatManager.sendMessage(msg);
 
       // Clear reply state after sending
-      setState(() {
-        _replyingMessage = null;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _replyingMessage = null;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
-      print("Error sending message: $e");
+      _logChatEvent(
+        eventType: "SYNC_FAILED",
+        message: "Local Exception sending message: $e",
+      );
+      if (kDebugMode) {
+        print("Error sending message: $e");
+      }
     }
   }
 
   void _addChatListener() {
-    print("_addChatListener");
+    if (kDebugMode) {
+      print("_addChatListener");
+    }
     client.chatManager.addEventHandler(
       Resources.strings.chatHandlerUniqueId,
-      ChatEventHandler(onMessagesReceived: onMessagesReceived),
+      ChatEventHandler(
+        onMessagesReceived: onMessagesReceived,
+        onCmdMessagesReceived: onMessagesReceived,
+      ),
     );
+
     client.addConnectionEventHandler(
       Resources.strings.chatHandlerUniqueId,
       ConnectionEventHandler(
         onConnected: () {
-          print("$myLog ConnectionEventHandler onConnected");
+          if (kDebugMode) {
+            print("$myLog ConnectionEventHandler onConnected");
+          }
+          _logChatEvent(
+            eventType: "CONNECTED",
+            message: "Socket connected successfully",
+          );
           if (mounted) {
             setState(() {
               isConnected = true;
             });
+
+            // Start timer when connected
+            if (profile != null &&
+                (_countdownTimer == null || !_countdownTimer!.isActive)) {
+              _startCountdownTimer();
+            }
+
+            // Send welcome message if needed when connected
+            _checkAndSendWelcomeMessage();
           }
         },
         onDisconnected: () {
-          print("$myLog ConnectionEventHandler onDisconnected");
+          if (kDebugMode) {
+            print("$myLog ConnectionEventHandler onDisconnected : ");
+          }
+          _logChatEvent(
+            eventType: "DISCONNECTED",
+            message: "Agora connection dropped",
+          );
           if (mounted) {
+            context.read<ChatTimerBloc>().add(
+              ChatEndEvent(userId: widget.userDetails["_id"]),
+            );
             setState(() {
               isConnected = false;
             });
           }
-        },
-        onTokenWillExpire: () async {
-          print("$myLog onTokenWillExpire - Refreshing token");
-          var agoraToken = await Repository().generateChatToken(_localUserId);
-          await client.renewAgoraToken(agoraToken['userToken']);
         },
       ),
     );
@@ -553,7 +948,14 @@ Gender: $gender
       Resources.strings.chatHandlerUniqueId,
       ChatMessageEvent(
         onSuccess: (msgId, msg) async {
-          print("$myLog send message onSuccess : $msg");
+          if (kDebugMode) {
+            print("$myLog send message onSuccess : $msg");
+          }
+          _logChatEvent(
+            eventType: "SYNC_SUCCESS",
+            message: "Message sent successfully: $msgId",
+          );
+          if (!mounted) return;
 
           if (msg.body is ChatImageMessageBody) {
             ChatImageMessageBody body = msg.body as ChatImageMessageBody;
@@ -576,17 +978,19 @@ Gender: $gender
               "sender": vendorDetailsModel!.toJson(),
             });
 
-            print(
-              "sendWelcomeMessage : ${body.content.contains("How Can I help you?")}",
-            );
+            if (kDebugMode) {
+              print(
+                "sendWelcomeMessage : ${body.content.contains("How Can I help you?")}",
+              );
+            }
             if (body.content.contains('How Can I help you?')) {
-              log(" this chat work or not");
-              return;
+              log("Welcome message detected, saving to history...");
+              // Don't return here, allow it to be saved to Repository().addNewMessage
             }
             // send chat ended message when chat ended
-            if (body.content == "Chat ended.") {
-              return;
-            }
+            // if (body.content == "Chat ended.") {
+            //   return;
+            // }
 
             await Repository().addNewMessage(widget.chatId, {
               "content": body.content,
@@ -594,14 +998,26 @@ Gender: $gender
           }
         },
         onError: (msgId, msg, error) {
-          print("$myLog send message onError - Message ID: $msgId");
-          print("$myLog Failed message: ${msg.toString()}");
-          print("$myLog Error details: $error");
+          _logChatEvent(
+            eventType: "SYNC_FAILED",
+            message: "Message $msgId failed: $error",
+          );
+          if (kDebugMode) {
+            print("$myLog send message onError - Message ID: $msgId");
+          }
+          if (kDebugMode) {
+            print("$myLog Failed message: ${msg.toString()}");
+          }
+          if (kDebugMode) {
+            print("$myLog Error details: $error");
+          }
 
           if (error is PlatformException) {
-            print(
-              "$myLog PlatformException details: ${error.code}, ${error.description}",
-            );
+            if (kDebugMode) {
+              print(
+                "$myLog PlatformException details: ${error.code}, ${error.description}",
+              );
+            }
           }
 
           // Retry logic (if needed)
@@ -620,18 +1036,60 @@ Gender: $gender
 
   void onMessagesReceived(List<ChatMessage> messages) {
     for (var msg in messages) {
-      print("$myLog onMessagesReceived : $msg");
+      if (kDebugMode) {
+        print("$myLog onMessagesReceived : $msg");
+      }
       if (mounted) {
         setState(() {
           isConnected = true;
         });
       }
+      if (msg.serverTime < _sessionStartTime) {
+        if (kDebugMode) {
+          print(
+            "$myLog Ignoring old message: ${msg.msgId} (sent at ${msg.serverTime}, session started at $_sessionStartTime)",
+          );
+        }
+        continue;
+      }
+
       switch (msg.body.type) {
         case MessageType.TXT:
           {
             ChatTextMessageBody body = msg.body as ChatTextMessageBody;
 
             if (msg.to == PrefService().getRegId()) {
+              // Extract remaining minutes if this is a "Joined" message
+              if (body.content.contains("CHAT_JOINED_BY")) {
+                if (kDebugMode) {
+                  print("$myLog Found Join message, parsing minutes...");
+                }
+                try {
+                  final RegExp regExp = RegExp(
+                    r"totalRemainingMinute:\s*(\d+\.?\d*)",
+                  );
+                  final match = regExp.firstMatch(body.content);
+                  if (match != null) {
+                    final String? minStr = match.group(1);
+                    if (minStr != null) {
+                      final double minutes = double.tryParse(minStr) ?? 0;
+                      if (kDebugMode) {
+                        print(
+                          "$myLog Extracted minutes from message: $minutes",
+                        );
+                      }
+                      if (minutes > 0) {
+                        _startCountdownTimer(externalMinutes: minutes);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  if (kDebugMode) {
+                    print("$myLog Error parsing minutes from message: $e");
+                  }
+                }
+              }
+
               if (msg.from == widget.userDetails["_id"]) {
                 _addToChatList({
                   "content": body.content,
@@ -639,13 +1097,21 @@ Gender: $gender
                   "sender": widget.userDetails,
                 });
               }
-              if (body.content.contains("Chat ended")) {
-                log("bodyyy:$body");
-                Navigator.pop(context);
-                return;
-              }
+              // if (body.content.contains("Chat ended")) {
+              //   log("bodyyy:$body");
+              //   _signOut(); // Ensure status is updated to available
+              //   if (mounted) {
+              //     context.read<NotificationBloc>().add(
+              //       NotificationResetEvent("${widget.userDetails["_id"]}"),
+              //     );
+              //     Navigator.pop(context);
+              //   }
+              //   return;
+              // }
             } else {
-              print("Nothing ");
+              if (kDebugMode) {
+                print("Nothing ");
+              }
             }
           }
         case MessageType.IMAGE:
@@ -661,6 +1127,23 @@ Gender: $gender
               }
             }
           }
+
+          break;
+        case MessageType.CMD:
+          {
+            ChatCmdMessageBody body = msg.body as ChatCmdMessageBody;
+            log("ffff :$body");
+            if (body.action == "END_CHAT_SESSION") {
+              _cleanupAndExit();
+              if (kDebugMode) {
+                print("Message Endedddd ");
+              }
+            }
+          }
+
+          if (kDebugMode) {
+            print("Message Ended or not");
+          }
           break;
         default:
           break;
@@ -669,12 +1152,25 @@ Gender: $gender
   }
 
   void _addToChatList(Map<String, dynamic> mData) {
-    print("$myLog _addToChatList : $mData");
+    if (kDebugMode) {
+      print("$myLog _addToChatList : $mData");
+    }
 
-    _chatList.add(mData);
     if (mounted) {
-      setState(() {});
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+      setState(() {
+        _chatList.add(mData);
+      });
+
+      // Use postFrameCallback to scroll after the list is rendered
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
     }
   }
 
@@ -685,36 +1181,89 @@ Gender: $gender
   final ScrollController _scrollController = ScrollController();
   bool _isLoading = false;
 
-  void _startCountdownTimer() {
-    final dynamic rawWallet = widget.userDetails["walletAmount"];
-    final dynamic rawRate = profile!.chatRate;
+  void _startCountdownTimer({double? externalMinutes}) {
+    // 1. Check if the CountDownTimerBloc is already running (e.g. from a previous visit to this screen)
+    final timerState = context.read<CountDownTimerBloc>().state;
 
-    double wallet = 0;
-    double rate = 1;
+    if (timerState.isRunning &&
+        timerState.duration > 0 &&
+        externalMinutes == null) {
+      if (mounted) {
+        setState(() {
+          _remainingSeconds = timerState.duration;
+        });
+      }
+      if (kDebugMode) {
+        print(
+          "Restoring timer from CountDownTimerBloc: $_remainingSeconds seconds",
+        );
+      }
+    } else {
+      double talkMinutes = 0;
+      double wallet = 0;
+      double rate = 1;
 
-    // Parse walletAmount
-    if (rawWallet is num) {
-      wallet = rawWallet.toDouble();
-    } else if (rawWallet is String) {
-      wallet = double.tryParse(rawWallet) ?? 0;
+      if (externalMinutes != null) {
+        talkMinutes = externalMinutes;
+        if (kDebugMode) {
+          print("Using minutes from joined message: $talkMinutes minutes");
+        }
+      } else if (widget.userDetails.containsKey("totalRemainingMinute") &&
+          widget.userDetails["totalRemainingMinute"] != null) {
+        talkMinutes =
+            double.tryParse(
+              widget.userDetails["totalRemainingMinute"].toString(),
+            ) ??
+            0;
+        if (kDebugMode) {
+          print(
+            "Using totalRemainingMinute from notification: $talkMinutes minutes",
+          );
+        }
+      } else {
+        // Use API data if available, otherwise fallback to widget data
+        final Map<String, dynamic> details =
+            _customerDetailsFromApi ?? widget.userDetails;
+        final dynamic walletData = details["walletAmount"];
+        final dynamic rawRate = profile?.chatRate;
+
+        // Parse walletAmount
+        if (walletData is num) {
+          wallet = walletData.toDouble();
+        } else if (walletData is String) {
+          wallet = double.tryParse(walletData) ?? 0;
+        }
+
+        // Parse chatRate
+        if (rawRate is num) {
+          rate = rawRate.toDouble();
+        } else if (rawRate is String) {
+          rate = double.tryParse(rawRate) ?? 1;
+        }
+
+        if (rate <= 0) rate = 1;
+        talkMinutes = wallet / rate;
+        if (kDebugMode) {
+          print(
+            "Talk time allowed (calculated from wallet): $talkMinutes minutes",
+          );
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _remainingSeconds = (talkMinutes * 60).round();
+        });
+      }
+
+      // Start the Bloc timer for persistence
+      context.read<CountDownTimerBloc>().add(StartTimer(_remainingSeconds));
     }
-
-    // Parse chatRate
-    if (rawRate is num) {
-      rate = rawRate.toDouble();
-    } else if (rawRate is String) {
-      rate = double.tryParse(rawRate) ?? 1;
-    }
-
-    if (rate <= 0) rate = 1;
-
-    double talkMinutes = wallet / rate;
-    print("Talk time allowed: $talkMinutes minutes");
-
-    _remainingSeconds = (talkMinutes * 60).round();
 
     if (_remainingSeconds <= 0) {
-      print("Countdown not started: insufficient balance.");
+      if (kDebugMode) {
+        print("Countdown not started: insufficient balance.");
+      }
       return;
     }
 
@@ -722,13 +1271,15 @@ Gender: $gender
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingSeconds <= 0) {
         timer.cancel();
-        print("Time over. Ending session.");
-        _signOut();
-        context.read<NotificationBloc>().add(
-          NotificationResetEvent("${widget.userDetails["_id"]}"),
-        );
-
-        //Navigator.pop(context);
+        if (kDebugMode) {
+          print("Time over. Ending session.");
+        }
+        _cleanupAndExit();
+        if (mounted) {
+          context.read<NotificationBloc>().add(
+            NotificationResetEvent("${widget.userDetails["_id"]}"),
+          );
+        }
       } else {
         if (mounted) {
           setState(() {
@@ -751,7 +1302,18 @@ Gender: $gender
   Future<void> _fetchVendorDetails() async {
     try {
       profile = await _repository.getVendorProfile();
-      setState(() {});
+      if (mounted) {
+        setState(() {});
+
+        // If we are already connected, try to start the timer with this new data
+        if (isConnected &&
+            (_countdownTimer == null || !_countdownTimer!.isActive)) {
+          if (kDebugMode) {
+            print("$myLog Starting timer now that vendor profile is fetched.");
+          }
+          _startCountdownTimer();
+        }
+      }
     } catch (e) {
       if (kDebugMode) {
         print("Error fetching vendor details: $e");
@@ -761,916 +1323,828 @@ Gender: $gender
 
   @override
   Widget build(BuildContext context) {
-    // Scroll to bottom whenever the keyboard height changes
-    if (MediaQuery.of(context).viewInsets.bottom > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients && _isLoading) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
+    if (kDebugMode) {
+      print(" TimingProblem : ${_formatDuration(_remainingSeconds)}");
     }
-    print(" coming : $isNewUser");
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircleAvatar(
-              radius: 15,
-              backgroundImage: NetworkImage(
-                widget.userDetails["avatar"] != null &&
-                        widget.userDetails["avatar"].toString().isNotEmpty
-                    ? "${AppUrl.baseUrl}/images/${widget.userDetails["avatar"]}"
-                    : "https://cdn-icons-png.flaticon.com/512/149/149071.png",
-              ),
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        widget.userDetails["name"] ?? "",
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      SizedBox(width: 5),
-                      isNewUser
-                          ? Text(
-                              "New User",
-                              style: Resources.styles.kTextStyle14(
-                                Colors.black,
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                    ],
-                  ),
-                  Text(
-                    _formatDuration(_remainingSeconds),
-                    style: Resources.styles.kTextStyle12(Colors.black),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          InkWell(
-            onTap: () async {
-              EasyLoading.show(
-                status: 'loading...',
-                dismissOnTap: false,
-                maskType: EasyLoadingMaskType.clear,
-              );
-              try {
-                // Fetch latitude and longitude from the city name (dop)
-                List<Location> locations = await locationFromAddress(
-                  birthPlace,
-                );
-                if (locations.isNotEmpty) {
-                  double latitude = locations[0].latitude;
-                  double longitude = locations[0].longitude;
-                  log("Latitude: $latitude, Longitude: $longitude");
-                  EasyLoading.dismiss();
-                  // Navigate to the next screen with the latitude and longitude
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ZodiacSign(
-                        dob: dob,
-                        dot: dobTime,
-                        dop: birthPlace,
-                        name: name.toString(),
-                        gender: gender,
-                        latitude: latitude,
-                        longitude: longitude,
-                      ),
-                    ),
-                  );
-                } else {
-                  EasyLoading.dismiss();
-                  log("No locations found for the given address.");
-                }
-              } catch (e) {
-                EasyLoading.dismiss();
-                log("Error fetching location: $e");
-              }
-            },
-            child: CircleAvatar(
-              backgroundColor: Resources.colors.greyColor.withOpacity(.2),
-              child: Container(
-                width: 30,
-                height: 30,
-                decoration: const BoxDecoration(shape: BoxShape.circle),
-                child: Center(
-                  child: Image.asset(
-                    Resources.images.openKundliImage,
-                    height: 25,
-                    width: 25,
-                    color: Colors.red,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          // Padding(
-          //   padding: const EdgeInsets.symmetric(horizontal: 10.0),
-          //   child: InkWell(
-          //     onTap: () {
-          //       GoRouter.of(context).pushNamed(RoutesName.matching);
-          //     },
-          //     child: CircleAvatar(
-          //       backgroundColor: Resources.colors.greyColor.withOpacity(.2),
-          //       child: Container(
-          //         width: 30,
-          //         height: 30,
-          //         decoration: const BoxDecoration(shape: BoxShape.circle),
-          //         child: Center(
-          //           child: Image.asset(
-          //             Resources.images.matchMakingImage,
-          //             height: 25,
-          //             width: 25,
-          //             color: Colors.red,
-          //           ),
-          //         ),
-          //       ),
-          //     ),
-          //   ),
-          // ),
-          // Padding(
-          //   padding: const EdgeInsets.symmetric(horizontal: 10.0),
-          //   child: InkWell(
-          //     onTap: () {
-          //       GoRouter.of(context).pushNamed(
-          //         RoutesName.numerology,
-          //         extra: {"name": name.toString(), "dob": dob.toString()},
-          //       );
-          //     },
-          //     child: CircleAvatar(
-          //       backgroundColor: Resources.colors.greyColor.withOpacity(.2),
-          //       child: Container(
-          //         width: 30,
-          //         height: 30,
-          //         decoration: const BoxDecoration(shape: BoxShape.circle),
-          //         child: Center(
-          //           child: Image.asset(
-          //             Resources.images.numerologyImage,
-          //             height: 25,
-          //             width: 25,
-          //             color: Colors.red,
-          //           ),
-          //         ),
-          //       ),
-          //     ),
-          //   ),
-          // ),
-          InkWell(
-            onTap: () async {
-              EasyLoading.show(
-                status: 'Disconnecting...',
-                dismissOnTap: false,
-                maskType: EasyLoadingMaskType.clear,
-              );
 
-              try {
-                // 1️⃣ Send last message
-                _messageContent = 'Chat ended.';
-                await _sendMessage();
-                _messageContent = '';
+    return BlocListener<CountDownTimerBloc, CountDownTimerState>(
+      listener: (context, state) {
+        if (state.isRunning && mounted) {
+          setState(() {
+            _remainingSeconds = state.duration;
+          });
 
-                // 2️⃣ Send notification FIRST
-                await NotificationService.sendNotification(
-                  widget.userDetails["fcmToken"],
-                  "Chat Ended",
-                  "Chat Ended",
-                  {'userId': _localUserId},
-                );
-
-                // 3️⃣ Update profile status
-                await Repository().updateProfile({
-                  "isChatAvailable": true,
-                  "isAudioCallAvailable": true,
-                  "isVideoCallAvailable": true,
-                  "isNowAvailable": true,
-                  "isOnline": true,
-                }, []);
-
-                // 4️⃣ Cancel timers & blocs
-                _countdownTimer?.cancel();
-                _countdownTimer = null;
-
-                context.read<CountDownTimerBloc>().add(StopTimer());
-                context.read<NotificationBloc>().add(
-                  NotificationResetEvent("${widget.userDetails["_id"]}"),
-                );
-
-                // 5️⃣ Sign out
-                _signOut();
-
-                // 6️⃣ Close screen
-                Navigator.pop(context, true);
-              } catch (e) {
-                debugPrint("End chat error: $e");
-              } finally {
-                EasyLoading.dismiss();
-              }
-            },
-            child: Container(
-              margin: EdgeInsets.only(right: 10),
-              alignment: Alignment.center,
-              height: 30,
-              width: 60,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(40),
-                gradient: LinearGradient(
-                  colors: [
-                    Color(0xFFF9E076),
-                    Color(0xFFD4AF37),
-                    Color(0xFFF9E076),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.25),
-                    blurRadius: 6,
-                    offset: Offset(0, 3),
-                  ),
-                ],
-                border: Border.all(color: Colors.white70, width: 1.5),
-              ),
-              child: Text(
-                "End",
-                style: Resources.styles.kTextStyle12B(Colors.black),
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: WillPopScope(
-        onWillPop: () async {
-          if (_replyingMessage != null) {
-            setState(() {
-              _replyingMessage = null;
-            });
-            return false;
+          if (state.duration <= 0) {
+            if (kDebugMode) {
+              print("Time over from Bloc. Ending session.");
+            }
+            _signOut();
           }
-
-          final shouldEnd = await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: Text(
-                "End Chat",
-                style: Resources.styles.kTextStyle16B(Colors.black),
-              ),
-              content: Text(
-                "Are you sure you want to end this chat?",
-                style: Resources.styles.kTextStyle14B(Colors.black),
-              ),
-              actions: [
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(
-                    "No",
-                    style: Resources.styles.kTextStyle16B(Colors.black),
+        }
+      },
+      child: SafeArea(
+        child: Scaffold(
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 15,
+                  backgroundImage: NetworkImage(
+                    widget.userDetails["avatar"] != null &&
+                            widget.userDetails["avatar"].toString().isNotEmpty
+                        ? "${AppUrl.baseUrl}/images/${widget.userDetails["avatar"]}"
+                        : "https://cdn-icons-png.flaticon.com/512/149/149071.png",
                   ),
                 ),
-                const SizedBox(width: 10),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                  onPressed: () => Navigator.pop(context, true),
-                  child: Text(
-                    "Yes",
-                    style: Resources.styles.kTextStyle16B(Colors.white),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            widget.userDetails["name"] ?? "",
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          SizedBox(width: 5),
+                          isNewUser
+                              ? Text(
+                                  "New User",
+                                  style: Resources.styles.kTextStyle14(
+                                    Colors.black,
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                        ],
+                      ),
+                      _remainingSeconds > 0
+                          ? Text(
+                              _formatDuration(_remainingSeconds),
+                              style: Resources.styles.kTextStyle12(Colors.black),
+                            )
+                          : Row(
+                              children: [
+                                const SizedBox(
+                                  height: 10,
+                                  width: 10,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 1.5,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  "Connecting...",
+                                  style: Resources.styles.kTextStyle10(
+                                    Colors.black54,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ],
                   ),
                 ),
               ],
             ),
-          );
-
-          if (shouldEnd == true) {
-            EasyLoading.show(
-              status: 'Disconnecting...',
-              dismissOnTap: false,
-              maskType: EasyLoadingMaskType.clear,
-            );
-
-            try {
-              // 1. Send notification
-              await NotificationService.sendNotification(
-                widget.userDetails["fcmToken"],
-                "Chat Ended",
-                'Chat Ended',
-                {'userId': _localUserId},
-              );
-
-              // 2. Send "Chat ended." message
-              _messageContent = 'Chat ended.';
-              await _sendMessage();
-              _messageContent = '';
-
-              // 3. Update profile status (VERY IMPORTANT: Await this)
-              await Repository().updateProfile({
-                "isChatAvailable": true,
-                "isAudioCallAvailable": true,
-                "isVideoCallAvailable": true,
-                "isNowAvailable": true,
-                "isOnline": true,
-              }, []);
-
-              // 4. Cleanup and pop
-              _countdownTimer?.cancel();
-              _countdownTimer = null;
-              context.read<CountDownTimerBloc>().add(StopTimer());
-              context.read<NotificationBloc>().add(
-                NotificationResetEvent("${widget.userDetails["_id"]}"),
-              );
-              _signOut();
-              
-              if (mounted) {
-                Navigator.pop(context);
-              }
-            } catch (e) {
-              log("Error ending chat via back: $e");
-            } finally {
-              EasyLoading.dismiss();
-            }
-            return false;
-          }
-
-          return false;
-        },
-        child: _isLoading || _isConnecting
-            ? Center(
-                child: CircularProgressIndicator(
-                  color: Resources.colors.themeColor,
+        
+            actions: [
+              InkWell(
+                onTap: () async {
+                  EasyLoading.show(
+                    status: 'loading...',
+                    dismissOnTap: false,
+                    maskType: EasyLoadingMaskType.clear,
+                  );
+                  try {
+                    // Fetch latitude and longitude from the city name (dop)
+                    List<Location> locations = await locationFromAddress(
+                      birthPlace,
+                    );
+                    if (locations.isNotEmpty) {
+                      double latitude = locations[0].latitude;
+                      double longitude = locations[0].longitude;
+                      log("Latitude: $latitude, Longitude: $longitude");
+                      EasyLoading.dismiss();
+                      // Navigate to the next screen with the latitude and longitude
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ZodiacSign(
+                            dob: dob,
+                            dot: dobTime,
+                            dop: birthPlace,
+                            name: name.toString(),
+                            gender: gender,
+                            latitude: latitude,
+                            longitude: longitude,
+                          ),
+                        ),
+                      );
+                    } else {
+                      EasyLoading.dismiss();
+                      log("No locations found for the given address.");
+                    }
+                  } catch (e) {
+                    EasyLoading.dismiss();
+                    log("Error fetching location: $e");
+                  }
+                },
+                child: CircleAvatar(
+                  backgroundColor: Resources.colors.greyColor.withOpacity(.2),
+                  child: Container(
+                    width: 30,
+                    height: 30,
+                    decoration: const BoxDecoration(shape: BoxShape.circle),
+                    child: Center(
+                      child: Image.asset(
+                        Resources.images.kundliImage,
+                        height: 25,
+                        width: 25,
+                        // color: Colors.red,
+                      ),
+                    ),
+                  ),
                 ),
-              )
-            : Column(
-                children: [
-                  Expanded(
-                    child: ListView(
-                      controller: _scrollController,
-                      padding: const EdgeInsets.symmetric(horizontal: 5),
-                      children: [
-                        const SizedBox(height: 10),
-                        buildUserDetailsMessage(),
-                        ..._chatList.map((e) {
-                          int index = _chatList.indexOf(e);
-                          String content = e['content'].toString();
+              ),
+        
+              const SizedBox(width: 5),
+              InkWell(
+                onTap: () async {
+                  EasyLoading.show(
+                    status: 'Disconnecting...',
+                    dismissOnTap: false,
+                    maskType: EasyLoadingMaskType.clear,
+                  );
+        
+                  try {
+                    // 1. Send CMD and Notify Backend
+                    _sendEndChatCMD();
+                    _cleanupAndExit();
+                  } catch (e) {
+                    debugPrint("End chat error: $e");
+                  } finally {
+                    EasyLoading.dismiss();
+                  }
+                },
+        
+                child: Container(
+                  margin: EdgeInsets.only(right: 10),
+                  alignment: Alignment.center,
+                  height: 30,
+                  width: 60,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(40),
+                    gradient: LinearGradient(
+                      colors: [
+                        Color(0xFFF9E076),
+                        Color(0xFFD4AF37),
+                        Color(0xFFF9E076),
+                      ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.25),
+                        blurRadius: 6,
+                        offset: Offset(0, 3),
+                      ),
+                    ],
+                    border: Border.all(color: Colors.white70, width: 1.5),
+                  ),
+                  child: Text(
+                    "End",
+                    style: Resources.styles.kTextStyle12B(Colors.black),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        
+          body: _isLoading || _isConnecting
+              ? Center(
+                  child: CircularProgressIndicator(
+                    color: Resources.colors.themeColor,
+                  ),
+                )
+              : Column(
+                  children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        controller: _scrollController,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 10,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 10),
+                            buildUserDetailsMessage(),
+                            ..._chatList.map((e) {
+                              int index = _chatList.indexOf(e);
+                              String content = e['content'].toString();
+        
+                              // match audio
+                              final audioMatch = RegExp(
+                                r'https?:\/\/\S+\.(aac|mp3|wav|m4a)',
+                              ).firstMatch(content);
+        
+                              String audioUrl = "";
+                              String textBefore = "";
+                              String textAfter = "";
+                              if (audioMatch != null) {
+                                audioUrl = audioMatch.group(0)!;
+        
+                                textBefore = content
+                                    .substring(0, audioMatch.start)
+                                    .trim();
+                                textAfter = content
+                                    .substring(audioMatch.end)
+                                    .trim();
+                              } else {
+                                textBefore = content.trim();
+                              }
+                              // Extract image URL
+                              final imageMatch = RegExp(
+                                r'https:\/\/[^\s]+',
+                              ).firstMatch(content);
+                              final imageUrl = imageMatch?.group(0);
+        
+                              // Extract "Replied to:" text (if any)
+                              final hasReplyText = content.contains(
+                                "Replied to:",
+                              );
+        
+                              // Extract the rest of the text after the image URL
+                              final afterImageText = imageUrl != null
+                                  ? content.split(imageUrl).last.trim()
+                                  : content;
 
-                          // match audio
-                          final audioMatch = RegExp(
-                            r'https?:\/\/\S+\.(aac|mp3|wav|m4a)',
-                          ).firstMatch(content);
-
-                          String audioUrl = "";
-                          String textBefore = "";
-                          String textAfter = "";
-                          if (audioMatch != null) {
-                            audioUrl = audioMatch.group(0)!;
-
-                            textBefore = content
-                                .substring(0, audioMatch.start)
-                                .trim();
-                            textAfter = content
-                                .substring(audioMatch.end)
-                                .trim();
-                          } else {
-                            textBefore = content.trim();
-                          }
-                          // Extract image URL
-                          final imageMatch = RegExp(
-                            r'https:\/\/[^\s]+',
-                          ).firstMatch(content);
-                          final imageUrl = imageMatch?.group(0);
-
-                          // Extract "Replied to:" text (if any)
-                          final hasReplyText = content.contains(
-                            "Replied to:",
-                          );
-
-                          // Extract the rest of the text after the image URL
-                          final afterImageText = imageUrl != null
-                              ? content.split(imageUrl).last.trim()
-                              : content;
-
-                          return e["sender"]["_id"] == PrefService().getRegId()
-                              ? Slidable(
-                                  key: ValueKey(
-                                    'msg_${index}_${e["content"].hashCode}',
-                                  ),
-                                  direction: Axis.horizontal,
-                                  startActionPane: ActionPane(
-                                    motion: const DrawerMotion(),
-                                    extentRatio: 0.25,
-                                    children: [
-                                      SlidableAction(
-                                        onPressed: (context) {
-                                          setState(() {
-                                            _replyingMessage = e;
-                                          });
-                                        },
-                                        backgroundColor: Colors.green,
-                                        foregroundColor: Colors.white,
-                                        icon: Icons.reply,
-                                        label: 'Reply',
-                                        borderRadius: BorderRadius.circular(10),
+                              return e["sender"]["_id"] ==
+                                      PrefService().getRegId()
+                                  ? Slidable(
+                                      key: ValueKey(
+                                        'msg_${index}_${e["content"].hashCode}',
                                       ),
-                                    ],
-                                  ),
-                                  child: Container(
-                                    alignment: Alignment.bottomRight,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(5),
-                                      margin: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 5,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: e["sender"]["_id"] ==
-                                                PrefService().getRegId()
-                                            ? Colors.green[100]
-                                            : Colors.grey[300],
-                                        borderRadius: BorderRadius.only(
-                                          topLeft: const Radius.circular(15),
-                                          topRight: const Radius.circular(15),
-                                          bottomLeft: e["sender"]["_id"] ==
-                                                  PrefService().getRegId()
-                                              ? const Radius.circular(15)
-                                              : const Radius.circular(0),
-                                          bottomRight: e["sender"]["_id"] ==
-                                                  PrefService().getRegId()
-                                              ? const Radius.circular(0)
-                                              : const Radius.circular(15),
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.end,
+                                      direction: Axis.horizontal,
+                                      startActionPane: ActionPane(
+                                        motion: const DrawerMotion(),
+                                        extentRatio: 0.25,
                                         children: [
-                                          e['content'].toString().contains(
+                                          SlidableAction(
+                                            onPressed: (context) {
+                                              setState(() {
+                                                _replyingMessage = e;
+                                              });
+                                            },
+                                            backgroundColor: Colors.green,
+                                            foregroundColor: Colors.white,
+                                            icon: Icons.reply,
+                                            label: 'Reply',
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      child: Container(
+                                        alignment: Alignment.bottomRight,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(5),
+                                          margin: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                e["sender"]["_id"] ==
+                                                    PrefService().getRegId()
+                                                ? Colors.green[100]
+                                                : Colors.grey[300],
+                                            borderRadius: BorderRadius.only(
+                                              topLeft: const Radius.circular(15),
+                                              topRight: const Radius.circular(15),
+                                              bottomLeft:
+                                                  e["sender"]["_id"] ==
+                                                      PrefService().getRegId()
+                                                  ? const Radius.circular(15)
+                                                  : const Radius.circular(0),
+                                              bottomRight:
+                                                  e["sender"]["_id"] ==
+                                                      PrefService().getRegId()
+                                                  ? const Radius.circular(0)
+                                                  : const Radius.circular(15),
+                                            ),
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.end,
+                                            children: [
+                                              // Text("data ${e['content'].toString().contains('https://a61.easemob.com/')}\n",),
+                                              e['content'].toString().contains(
                                                     "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
                                                   )
-                                              ? Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    if (hasReplyText)
-                                                      const Text(
-                                                        "Replied to:",
-                                                        style: TextStyle(
-                                                          fontStyle:
-                                                              FontStyle.italic,
-                                                          color: Colors.grey,
-                                                        ),
-                                                      ),
-                                                    if (imageUrl != null &&
-                                                        imageUrl.contains(
-                                                          "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
-                                                        ))
-                                                      SizedBox(
-                                                        height: 200,
-                                                        child: MyZoomImageWidget(
-                                                          imgUrl: imageUrl,
-                                                        ),
-                                                      ),
-                                                    if (afterImageText
-                                                        .isNotEmpty)
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .only(top: 8.0),
-                                                        child: Text(
-                                                            afterImageText),
-                                                      ),
-                                                  ],
-                                                )
-                                              : audioUrl.isNotEmpty
                                                   ? Column(
                                                       crossAxisAlignment:
                                                           CrossAxisAlignment
                                                               .start,
                                                       children: [
-                                                        if (textBefore
+                                                        // Optional: Show "Replied to:"
+                                                        if (hasReplyText)
+                                                          const Text(
+                                                            "Replied to:",
+                                                            style: TextStyle(
+                                                              fontStyle: FontStyle
+                                                                  .italic,
+                                                              color: Colors.grey,
+                                                            ),
+                                                          ),
+        
+                                                        // Show the image if the URL exists
+                                                        if (imageUrl != null &&
+                                                            imageUrl.contains(
+                                                              "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
+                                                            ))
+                                                          SizedBox(
+                                                            height: 200,
+                                                            child:
+                                                                MyZoomImageWidget(
+                                                                  imgUrl:
+                                                                      imageUrl,
+                                                                ),
+                                                          ),
+        
+                                                        // Show the remaining message after the image
+                                                        if (afterImageText
                                                             .isNotEmpty)
+                                                          Padding(
+                                                            padding:
+                                                                const EdgeInsets.only(
+                                                                  top: 8.0,
+                                                                ),
+                                                            child: Text(
+                                                              afterImageText,
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    )
+                                                  : audioUrl.isNotEmpty
+                                                  ? Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        if (textBefore.isNotEmpty)
                                                           Text(textBefore),
+        
                                                         if (audioUrl.isNotEmpty)
                                                           Padding(
                                                             padding:
-                                                                const EdgeInsets
-                                                                    .symmetric(
-                                                                    vertical: 6),
+                                                                const EdgeInsets.symmetric(
+                                                                  vertical: 6,
+                                                                ),
                                                             child:
                                                                 AttachmentAudioWidget(
-                                                              url: audioUrl,
-                                                            ),
+                                                                  url: audioUrl,
+                                                                ),
                                                           ),
-                                                        if (textAfter
-                                                            .isNotEmpty)
+        
+                                                        if (textAfter.isNotEmpty)
                                                           Text(textAfter),
                                                       ],
                                                     )
                                                   : e['content']
-                                                          .toString()
-                                                          .endsWith(".aac")
-                                                      ? AttachmentAudioWidget(
-                                                          url: e["content"],
-                                                        )
-                                                      : e["content"]
-                                                              .toString()
-                                                              .contains(
-                                                                "How Can I help you?",
-                                                              )
-                                                          ? const SizedBox
-                                                              .shrink()
-                                                          : Text(
-                                                              e["content"]
-                                                                  .toString(),
-                                                              style: TextStyle(
-                                                                color: e["sender"]
-                                                                            [
-                                                                            "_id"] ==
-                                                                        PrefService()
-                                                                            .getRegId()
-                                                                    ? Colors
-                                                                        .black
-                                                                    : Colors
-                                                                        .black87,
-                                                              ),
-                                                            ),
-                                          const SizedBox(height: 5),
-                                          Text(
-                                            "${e["time"]}",
-                                            style: TextStyle(
-                                              color: Colors.grey[600],
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              : Slidable(
-                                  key: ValueKey(
-                                    'msg_${index}_${e["content"].hashCode}',
-                                  ),
-                                  direction: Axis.horizontal,
-                                  startActionPane: ActionPane(
-                                    motion: const DrawerMotion(),
-                                    extentRatio: 0.25,
-                                    children: [
-                                      SlidableAction(
-                                        onPressed: (context) {
-                                          setState(() {
-                                            _replyingMessage = e;
-                                          });
-                                        },
-                                        backgroundColor: Colors.green,
-                                        foregroundColor: Colors.white,
-                                        icon: Icons.reply,
-                                        label: 'Reply',
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Container(
-                                    alignment: Alignment.bottomLeft,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(5),
-                                      margin: const EdgeInsets.symmetric(
-                                        horizontal: 10,
-                                        vertical: 5,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: e["sender"]["_id"] ==
-                                                PrefService().getRegId()
-                                            ? Colors.green[100]
-                                            : Colors.grey[300],
-                                        borderRadius: BorderRadius.only(
-                                          topLeft: const Radius.circular(15),
-                                          topRight: const Radius.circular(15),
-                                          bottomLeft: e["sender"]["_id"] ==
-                                                  PrefService().getRegId()
-                                              ? const Radius.circular(15)
-                                              : const Radius.circular(0),
-                                          bottomRight: e["sender"]["_id"] ==
-                                                  PrefService().getRegId()
-                                              ? const Radius.circular(0)
-                                              : const Radius.circular(15),
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.end,
-                                        children: [
-                                          e['content'].toString().contains(
-                                                    "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
-                                                  )
-                                              ? Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    if (hasReplyText)
-                                                      const Text(
-                                                        "Replied to:",
-                                                        style: TextStyle(
-                                                          fontStyle:
-                                                              FontStyle.italic,
-                                                          color: Colors.grey,
-                                                        ),
-                                                      ),
-                                                    if (imageUrl != null &&
-                                                        imageUrl.contains(
-                                                          "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
-                                                        ))
-                                                      SizedBox(
-                                                        height: 200,
-                                                        child: MyZoomImageWidget(
-                                                          imgUrl: imageUrl,
-                                                        ),
-                                                      ),
-                                                    if (afterImageText
-                                                        .isNotEmpty)
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .only(top: 8.0),
-                                                        child: Text(
-                                                            afterImageText),
-                                                      ),
-                                                  ],
-                                                )
-                                              : e['content']
-                                                      .toString()
-                                                      .endsWith(".aac")
+                                                        .toString()
+                                                        .endsWith(".aac")
                                                   ? AttachmentAudioWidget(
                                                       url: e["content"],
                                                     )
+                                                  : e["content"]
+                                                        .toString()
+                                                        .contains(
+                                                          "How Can I help you?",
+                                                        )
+                                                  ? const SizedBox.shrink()
                                                   : Text(
                                                       e["content"].toString(),
                                                       style: TextStyle(
-                                                        color: e["sender"]
-                                                                    ["_id"] ==
+                                                        color:
+                                                            e["sender"]["_id"] ==
                                                                 PrefService()
                                                                     .getRegId()
                                                             ? Colors.black
                                                             : Colors.black87,
                                                       ),
                                                     ),
-                                          const SizedBox(height: 5),
-                                          Text(
-                                            "${e["time"]}",
-                                            style: TextStyle(
-                                              color: Colors.grey[600],
-                                              fontSize: 10,
+                                              const SizedBox(height: 5),
+                                              Text(
+                                                "${e["time"]}",
+                                                style: TextStyle(
+                                                  color: Colors.grey[600],
+                                                  fontSize: 10,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : Slidable(
+                                      key: ValueKey(
+                                        'msg_${index}_${e["content"].hashCode}',
+                                      ),
+                                      direction: Axis.horizontal,
+                                      startActionPane: ActionPane(
+                                        motion: const DrawerMotion(),
+                                        extentRatio: 0.25,
+                                        children: [
+                                          SlidableAction(
+                                            onPressed: (context) {
+                                              setState(() {
+                                                _replyingMessage = e;
+                                              });
+                                            },
+                                            backgroundColor: Colors.green,
+                                            foregroundColor: Colors.white,
+                                            icon: Icons.reply,
+                                            label: 'Reply',
+                                            borderRadius: BorderRadius.circular(
+                                              10,
                                             ),
                                           ),
                                         ],
                                       ),
-                                    ),
-                                  ),
-                                );
-                        }).toList(),
-                      ],
-                    ),
-                  ),
-
-                  if (_replyingMessage != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[100],
-                        border: Border(
-                          left: BorderSide(
-                            color: Colors.green.withOpacity(0.6),
-                            width: 4,
-                          ),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.reply,
-                            color: Colors.green,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child:
-                                _replyingMessage!['content'].toString().contains(
-                                  "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
-                                )
-                                ? Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      SizedBox(
-                                        height: 50,
-                                        child: MyZoomImageWidget(
-                                          imgUrl: RegExp(r'https:\/\/[^\s]+')
-                                              .firstMatch(
-                                                _replyingMessage!['content'],
-                                              )!
-                                              .group(0)!,
+                                      child: Container(
+                                        alignment: Alignment.bottomLeft,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(5),
+                                          margin: const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 5,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                e["sender"]["_id"] ==
+                                                    PrefService().getRegId()
+                                                ? Colors.green[100]
+                                                : Colors.grey[300],
+                                            borderRadius: BorderRadius.only(
+                                              topLeft: const Radius.circular(15),
+                                              topRight: const Radius.circular(15),
+                                              bottomLeft:
+                                                  e["sender"]["_id"] ==
+                                                      PrefService().getRegId()
+                                                  ? const Radius.circular(15)
+                                                  : const Radius.circular(0),
+                                              bottomRight:
+                                                  e["sender"]["_id"] ==
+                                                      PrefService().getRegId()
+                                                  ? const Radius.circular(0)
+                                                  : const Radius.circular(15),
+                                            ),
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.end,
+                                            children: [
+                                              e['content'].toString().contains(
+                                                    "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
+                                                  )
+                                                  ? Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
+                                                      children: [
+                                                        // Optional: Show "Replied to:"
+                                                        if (hasReplyText)
+                                                          const Text(
+                                                            "Replied to:",
+                                                            style: TextStyle(
+                                                              fontStyle: FontStyle
+                                                                  .italic,
+                                                              color: Colors.grey,
+                                                            ),
+                                                          ),
+        
+                                                        // Show the image if the URL exists
+                                                        if (imageUrl != null &&
+                                                            imageUrl.contains(
+                                                              "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
+                                                            ))
+                                                          SizedBox(
+                                                            height: 200,
+                                                            child:
+                                                                MyZoomImageWidget(
+                                                                  imgUrl:
+                                                                      imageUrl,
+                                                                ),
+                                                          ),
+        
+                                                        // Show the remaining message after the image
+                                                        if (afterImageText
+                                                            .isNotEmpty)
+                                                          Padding(
+                                                            padding:
+                                                                const EdgeInsets.only(
+                                                                  top: 8.0,
+                                                                ),
+                                                            child: Text(
+                                                              afterImageText,
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    )
+                                                  : e['content']
+                                                        .toString()
+                                                        .endsWith(".aac")
+                                                  ? AttachmentAudioWidget(
+                                                      url: e["content"],
+                                                    )
+                                                  : Text(
+                                                      e["content"].toString(),
+                                                      style: TextStyle(
+                                                        color:
+                                                            e["sender"]["_id"] ==
+                                                                PrefService()
+                                                                    .getRegId()
+                                                            ? Colors.black
+                                                            : Colors.black87,
+                                                      ),
+                                                    ),
+                                              const SizedBox(height: 5),
+                                              Text(
+                                                "${e["time"]}",
+                                                style: TextStyle(
+                                                  color: Colors.grey[600],
+                                                  fontSize: 10,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ),
-                                    ],
-                                  )
-                                : _replyingMessage!['content']
-                                      .toString()
-                                      .endsWith(".aac")
-                                ? AttachmentAudioWidget(
-                                    url: _replyingMessage!["content"],
-                                  )
-                                : _replyingMessage!['content']
-                                      .toString()
-                                      .contains(".aac")
-                                ? AttachmentAudioWidget(
-                                    url:
-                                        RegExp(
-                                              r'https?:\/\/\S+\.(aac|mp3|m4a|wav)',
-                                            )
-                                            .firstMatch(
-                                              _replyingMessage!["content"],
-                                            )
-                                            .toString(),
-                                  )
-                                : Text(
-                                    _replyingMessage!["content"],
-                                    style: const TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.black87,
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                          ),
-                          IconButton(
-                            icon: const Icon(
-                              Icons.close_rounded,
-                              size: 20,
-                              color: Colors.grey,
-                            ),
-                            onPressed: () {
-                              setState(() {
-                                _replyingMessage = null;
-                              });
-                            },
-                          ),
-                        ],
+                                    );
+                            }).toList(),
+                          ],
+                        ),
                       ),
                     ),
-                  Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Row(
-                        children: [
-                          //  Camera / Image Picker
-                          GestureDetector(
-                            onTap: () =>
-                                showImagePickerDialog(context, _remoteChatId!),
-                            child: CircleAvatar(
-                              radius: 22,
-                              backgroundColor: Colors.grey.withOpacity(0.4),
-                              child: Icon(
-                                Icons.photo_camera_back_outlined,
-                                color: Resources.colors.blackColor,
-                                size: 20,
-                              ),
+        
+                    if (_replyingMessage != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          border: Border(
+                            left: BorderSide(
+                              color: Colors.green.withOpacity(0.6),
+                              width: 4,
                             ),
                           ),
-                          const SizedBox(width: 8),
-
-                          // Text Field
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.reply,
+                              color: Colors.green,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child:
+                                  _replyingMessage!['content'].toString().contains(
+                                    "${AgoraConfig.orgName}/${AgoraConfig.appName}/chatfiles",
+                                  )
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        SizedBox(
+                                          height: 50,
+                                          child: MyZoomImageWidget(
+                                            imgUrl: RegExp(r'https:\/\/[^\s]+')
+                                                .firstMatch(
+                                                  _replyingMessage!['content'],
+                                                )!
+                                                .group(0)!,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : _replyingMessage!['content']
+                                        .toString()
+                                        .endsWith(".aac")
+                                  ? AttachmentAudioWidget(
+                                      url: _replyingMessage!["content"],
+                                    )
+                                  : _replyingMessage!['content']
+                                        .toString()
+                                        .contains(".aac")
+                                  ? AttachmentAudioWidget(
+                                      url:
+                                          RegExp(
+                                                r'https?:\/\/\S+\.(aac|mp3|m4a|wav)',
+                                              )
+                                              .firstMatch(
+                                                _replyingMessage!["content"],
+                                              )
+                                              .toString(),
+                                    )
+                                  : Text(
+                                      _replyingMessage!["content"],
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.black87,
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                            ),
+                            IconButton(
+                              icon: const Icon(
+                                Icons.close_rounded,
+                                size: 20,
+                                color: Colors.grey,
                               ),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.9),
-                                borderRadius: BorderRadius.circular(25),
-                                border: Border.all(
-                                  color: Colors.grey.shade300,
-                                  width: 0.5,
+                              onPressed: () {
+                                setState(() {
+                                  _replyingMessage = null;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
+                          children: [
+                            //  Camera / Image Picker
+                            GestureDetector(
+                              onTap: () =>
+                                  showImagePickerDialog(context, _remoteChatId!),
+                              child: CircleAvatar(
+                                radius: 22,
+                                backgroundColor: Colors.grey.withOpacity(0.4),
+                                child: Icon(
+                                  Icons.photo_camera_back_outlined,
+                                  color: Resources.colors.themeColor,
+                                  size: 20,
                                 ),
                               ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: TextFormField(
-                                      controller: _controller,
-                                      style: Resources.styles.kTextStyle14B5(
-                                        Resources.colors.blackColor,
-                                      ),
-                                      decoration: InputDecoration(
-                                        hintText: 'Say Hi...',
-                                        hintStyle: Resources.styles
-                                            .kTextStyle14B5(
-                                              Resources.colors.blackColor,
+                            ),
+                            const SizedBox(width: 8),
+        
+                            // Text Field
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.9),
+                                  borderRadius: BorderRadius.circular(25),
+                                  border: Border.all(
+                                    color: Colors.grey.shade300,
+                                    width: 0.5,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: TextFormField(
+                                        controller: _controller,
+                                        style: Resources.styles.kTextStyle14B5(
+                                          Resources.colors.blackColor,
+                                        ),
+                                        cursorColor: Resources.colors.blackColor,
+                                        decoration: InputDecoration(
+                                          hintText: 'Say Hi...',
+                                          hintStyle: Resources.styles
+                                              .kTextStyle14B5(
+                                                Resources.colors.blackColor,
+                                              ),
+                                          border: InputBorder.none,
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                vertical: 12,
+                                              ),
+                                          suffixIcon: GestureDetector(
+                                            onTap: () async {
+                                              if (!isRecording) {
+                                                await recorder.start();
+                                                isRecording = true;
+                                                setState(() {});
+                                              } else {
+                                                final result = await recorder
+                                                    .stop();
+                                                isRecording = false;
+                                                setState(() {});
+        
+                                                if (result != null) {
+                                                  if (kDebugMode) {
+                                                    print(
+                                                      'isRecording ${result.duration}',
+                                                    );
+                                                  }
+        
+                                                  http.MultipartFile?
+                                                  attachments =
+                                                      await http
+                                                          .MultipartFile.fromPath(
+                                                        "attachments",
+                                                        result!.file.path
+                                                            .toString(),
+                                                      );
+        
+                                                  _repository
+                                                      .addNewMessageWithAttachment(
+                                                        widget.chatId,
+                                                        {},
+                                                        [attachments],
+                                                      )
+                                                      .then((v) {
+                                                        if (kDebugMode) {
+                                                          print("$v");
+                                                        }
+        
+                                                        _messageContent =
+                                                            v['data']['attachments'][0]['url'];
+                                                        _sendMessage().then((
+                                                          value,
+                                                        ) {
+                                                          _controller.clear();
+                                                        });
+                                                      });
+                                                }
+                                              }
+                                            },
+                                            child: Icon(
+                                              isRecording
+                                                  ? Icons.stop_circle
+                                                  : Icons.mic,
+                                              color: isRecording
+                                                  ? Colors.red
+                                                  : Colors.black,
+                                              size: 26,
                                             ),
-                                        border: InputBorder.none,
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                              vertical: 12,
-                                            ),
-                                        // suffixIcon: GestureDetector(
-                                        //   onTap: () async {
-                                        //     if (!isRecording) {
-                                        //       await recorder.start();
-                                        //       isRecording = true;
-                                        //       setState(() {});
-                                        //     } else {
-                                        //       final result = await recorder
-                                        //           .stop();
-                                        //       isRecording = false;
-                                        //       setState(() {});
-                                        //
-                                        //       if (result != null) {
-                                        //         print('isRecording $result');
-                                        //
-                                        //         http.MultipartFile?
-                                        //         attachments =
-                                        //             await http
-                                        //                 .MultipartFile.fromPath(
-                                        //               "attachments",
-                                        //               result!.file.path
-                                        //                   .toString(),
-                                        //             );
-                                        //
-                                        //         _repository
-                                        //             .addNewMessageWithAttachment(
-                                        //               widget.chatId,
-                                        //               {},
-                                        //               [attachments],
-                                        //             )
-                                        //             .then((v) {
-                                        //               print("$v");
-                                        //
-                                        //               _messageContent =
-                                        //                   v['data']['attachments'][0]['url'];
-                                        //               _sendMessage().then((
-                                        //                 value,
-                                        //               ) {
-                                        //                 _controller.clear();
-                                        //               });
-                                        //             });
-                                        //       }
-                                        //     }
-                                        //   },
-                                        //   child: Icon(
-                                        //     isRecording
-                                        //         ? Icons.stop_circle
-                                        //         : Icons.mic,
-                                        //     color: isRecording
-                                        //         ? Colors.red
-                                        //         : Colors.black,
-                                        //     size: 26,
-                                        //   ),
-                                        // ),
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-
-                          // Send Button
-                          GestureDetector(
-                            onTap: () {
-                              if (_controller.text.trim().isNotEmpty) {
-                                _messageContent = _controller.text.trim();
-                                _sendMessage().then((_) => _controller.clear());
-                              }
-                            },
-                            child: CircleAvatar(
-                              radius: 22,
-                              backgroundColor: Resources.colors.themeColor,
-                              child: Icon(
-                                Icons.send,
-                                color: Colors.black,
-                                size: 22,
+                            const SizedBox(width: 8),
+        
+                            // Send Button
+                            GestureDetector(
+                              onTap: () {
+                                if (_controller.text.trim().isNotEmpty) {
+                                  _messageContent = _controller.text.trim();
+                                  _sendMessage().then((_) => _controller.clear());
+                                }
+                              },
+                              child: CircleAvatar(
+                                radius: 22,
+                                backgroundColor: Resources.colors.blackColor,
+                                child: Icon(
+                                  Icons.send,
+                                  color:Resources.colors.themeColor,
+                                  size: 22,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ),
+                  ],
+                ),
+        ),
       ),
     );
   }

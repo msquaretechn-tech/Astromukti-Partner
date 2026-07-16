@@ -117,6 +117,9 @@ void main() async {
   await CallKitService.initialize();
   // CallKitService.listen();
 
+  // FirebaseMessaging.onBackgroundMessage(
+  //   NotificationService.firebaseMessagingBackgroundHandler,
+  // );
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   WakelockPlus.enable();
   //Workmanager().initialize(callbackDispatcher, isInDebugMode: true);
@@ -242,7 +245,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           "isAudioCallAvailable": vendorProfile.isAudioCallAvailable,
           "isVideoCallAvailable": vendorProfile.isVideoCallAvailable,
         }, []);
-        log("Profile updated from vendor profile values ✅");
+        log("Profile updated from vendor profile values");
       } else {
         log("Vendor profile is null, skipping update");
       }
@@ -256,6 +259,51 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     chatTimerSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    if (state == AppLifecycleState.resumed) {
+      log("App resumed. Syncing ended chats / notifications.");
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.reload();
+        
+        // 1. Process specific ended users saved from background
+        final endedUsers = prefs.getStringList('ended_chat_users') ?? [];
+        if (endedUsers.isNotEmpty) {
+          log("Found ended users from background: $endedUsers");
+          for (var userId in endedUsers) {
+            if (userId.isNotEmpty) {
+              if (mounted) {
+                context.read<NotificationBloc>().add(
+                  NotificationResetEvent(userId),
+                );
+              }
+            }
+          }
+          await prefs.remove('ended_chat_users');
+        }
+
+        // 2. Fetch server availability to double-check.
+        // If the vendor is available (not busy in any chat) and app is not currently ringing,
+        // we can safely clear all badges/counters to prevent any stale badges.
+        final vendorId = PrefService().getRegId();
+        final bool isRinging = prefs.getBool('chat_ringing') ?? false;
+        
+        if (vendorId != null && vendorId.isNotEmpty) {
+          final v = await Repository().getAvailability(vendorId);
+          if (v != null && v['isChatAvailable'] == true && !isRinging) {
+            log("Vendor is available and not ringing. Resetting all notifications.");
+            if (mounted) {
+              context.read<NotificationBloc>().add(NotificationResetAllEvent());
+            }
+          }
+        }
+      } catch (e) {
+        log("Error syncing ended chats on resume: $e");
+      }
+    }
   }
 
   void syncChatMapToBloc(BuildContext context) async {
@@ -309,11 +357,16 @@ class NativeService {
 
       await platform.invokeMethod('startService', {
         "url":
-            "https://bookmyastro.bookmyastro.co.in/api/vendor/update-availability/$id",
+            "https://app.astromukti.com/api/vendor/update-availability/$id",
         "token": token,
       });
+      if (kDebugMode) {
+        print("astro goes offline mode");
+      }
     } catch (e) {
-      print("Error starting service: $e");
+      if (kDebugMode) {
+        print("Error starting service: $e");
+      }
     }
   }
 }
@@ -329,9 +382,9 @@ class HoursService {
         "vendorId": vendorId,
         "token": token,
       });
-      print("✅ LoginHoursService started");
+      print("LoginHoursService started");
     } catch (e) {
-      print("❌ Failed to start LoginHoursService: $e");
+      print("Failed to start LoginHoursService: $e");
     }
   }
 }
