@@ -26,7 +26,7 @@ object RingtoneHelper {
 
     fun play(context: Context) {
         if (isPlaying) {
-            Log.d(TAG, "Already playing, skipping")
+            Log.i(TAG, "Already playing, skipping")
             return
         }
 
@@ -77,7 +77,7 @@ object RingtoneHelper {
 
             mediaPlayer = player
             isPlaying = true
-            Log.d(TAG, "Ringtone started (rawId=$rawId)")
+            Log.i(TAG, "Ringtone started (rawId=$rawId)")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error playing ringtone: $e")
@@ -102,7 +102,7 @@ object RingtoneHelper {
             }
 
             isPlaying = false
-            Log.d(TAG, "Ringtone stopped")
+            Log.i(TAG, "Ringtone stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping ringtone: $e")
             isPlaying = false

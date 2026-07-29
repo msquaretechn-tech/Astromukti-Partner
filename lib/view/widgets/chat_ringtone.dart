@@ -1,4 +1,4 @@
-import 'dart:developer';
+
 
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/foundation.dart';
@@ -58,11 +58,12 @@ class ChatRingTone {
       final intent = AndroidIntent(
         action: action,
         package: _package,
+        componentName: 'com.jyotishastro.RingtoneBroadcastReceiver',
       );
       await intent.sendBroadcast();
-      log('ChatRingTone: broadcast sent [$action]');
+      print('ChatRingTone: broadcast sent [$action]');
     } catch (e) {
-      log('ChatRingTone: sendBroadcast failed ($e), trying MethodChannel fallback...');
+      print('ChatRingTone: sendBroadcast failed ($e), trying MethodChannel fallback...');
       // FALLBACK: MethodChannel — foreground / main engine only
       try {
         if (action == _actionPlay) {
@@ -70,9 +71,9 @@ class ChatRingTone {
         } else {
           await _channel.invokeMethod('stopRingtone');
         }
-        log('ChatRingTone: MethodChannel fallback success [$action]');
+        print('ChatRingTone: MethodChannel fallback success [$action]');
       } catch (e2) {
-        log('ChatRingTone: Both methods failed: $e2');
+        print('ChatRingTone: Both methods failed: $e2');
         if (action == _actionPlay) isRinging = false;
       }
     }

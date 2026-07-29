@@ -501,106 +501,104 @@ class NotificationService {
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage event) async {
-  WidgetsFlutterBinding.ensureInitialized();
-  if (Firebase.apps.isEmpty) {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  }
+  try {
+    WidgetsFlutterBinding.ensureInitialized();
+    try {
+      if (Firebase.apps.isEmpty) {
+        await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+      }
+    } catch (firebaseError) {
+      print("Firebase.initializeApp ignored/failed in background isolate: $firebaseError");
+    }
 
-  await PrefService.init();
-  await CallKitService.initialize();
-  await flutterLocalNotificationsPlugin.initialize(
-    const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-    ),
-  );
+    await PrefService.init();
+    await CallKitService.initialize();
+    await flutterLocalNotificationsPlugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
 
-  print("Background event : ${event.data}");
-  print("Background title : ${event.notification?.title}");
+    print("Background event : ${event.data}");
+    print("Background title : ${event.notification?.title}");
 
-  String? title = event.notification?.title ?? event.data['title'];
+    String? title = event.notification?.title ?? event.data['title'];
 
-  if (title == "Chat" || title == "Audio Call" ) {
-    // ChatLoggerRepo().logEvent(
-    //   userId: PrefService().getRegId() ?? "unknown",
-    //   vendorId: event.data["vendorId"] ?? event.data["userId"] ?? "unknown",
-    //   sessionId: event.data["chatId"] ?? "unknown",
-    //   eventType: "NOTIFICATION_RECEIVED_BACKGROUND",
-    //   message: "Notification arrived while app is in background (Title: $title)",
-    //   appState: "background",
-    //   isConnected: false,
-    // );
-  }
+    if (title == "Chat") {
+      print("Background: Show simple notification starting...");
+      await NotificationService._showSimpleNotification(event);
+      print("Background: Show simple notification done.");
 
-  if (title == "Chat") {
-    // Show notification with ringtone sound (res/raw/ringtone.mp3)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('chat_ringing', true);
+      await prefs.setString('pending_ring_userId', event.data['userId'] ?? '');
+
+      print("Background: Calling playRingtoneForce...");
+      await ChatRingTone().playRingtoneForce();
+      print("Background: playRingtoneForce completed.");
+
+      // Keep isolate alive for up to 60s, polling for stop signal
+      for (int i = 0; i < 60; i++) {
+        await Future.delayed(const Duration(seconds: 1));
+        await prefs.reload();
+        if (prefs.getBool('chat_ringing') == false) {
+          print("Background: chat_ringing became false. Stopping loop.");
+          break;
+        }
+      }
+
+      print("Background: Stopping ringtone...");
+      await ChatRingTone().stopRingtone();
+      await prefs.setBool('chat_ringing', false);
+      print("Background: Ringtone stop done.");
+      return;
+    }
+
+    if (title == "Audio Call") {
+      await CallKitService.showIncoming(mData: event.data, callType: 0);
+      return;
+    }
+
+    if (title == "Call Declined") {
+      CallKitService.endAllCalls();
+      NotificationService.dismissNotifications();
+      return;
+    }
+
+    if (title == "Chat Ended") {
+      ChatRingTone().stopRingtone();
+      CallKitService.endAllCalls();
+      NotificationService.dismissNotifications();
+
+      // Stop the ringtone loop (Chat background isolate checks this flag)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('chat_ringing', false);
+
+      await Repository().updateProfile({
+        "isChatAvailable": true,
+        "chatGroupId": "",
+        "isNowAvailable": true,
+      }, []);
+
+      // Save ended userId so the badge is cleared when app resumes
+      final String userId = event.data['userId'] ?? '';
+      if (userId.isNotEmpty) {
+        await prefs.reload();
+        final endedUsers = prefs.getStringList('ended_chat_users') ?? [];
+        if (!endedUsers.contains(userId)) {
+          endedUsers.add(userId);
+        }
+        await prefs.setStringList('ended_chat_users', endedUsers);
+        print("Chat Ended (background): saved userId=$userId to ended_chat_users");
+      }
+
+      return;
+    }
+
+    // Default → simple notification
     await NotificationService._showSimpleNotification(event);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('chat_ringing', true);
-    await prefs.setString('pending_ring_userId', event.data['userId'] ?? '');
-
-    // Start looping ringtone via RingtoneService (android_intent_plus)
-    // This works from background isolate and auto-stops on force-kill
-    await ChatRingTone().playRingtoneForce();
-
-    // Keep isolate alive for up to 60s, polling for stop signal
-    for (int i = 0; i < 60; i++) {
-      await Future.delayed(const Duration(seconds: 1));
-      await prefs.reload();
-      if (prefs.getBool('chat_ringing') == false) {
-        break;
-      }
-    }
-
-    // Timeout or stopped — ensure ringtone is off
-    await ChatRingTone().stopRingtone();
-    await prefs.setBool('chat_ringing', false);
-    return;
+  } catch (e, stacktrace) {
+    print("🔥 ERROR IN BACKGROUND HANDLER: $e");
+    print("🔥 BACKGROUND HANDLER STACKTRACE: $stacktrace");
   }
-
-  if (title == "Audio Call") {
-    await CallKitService.showIncoming(mData: event.data, callType: 0);
-    return;
-  }
-
-
-
-  if (title == "Call Declined") {
-    CallKitService.endAllCalls();
-    NotificationService.dismissNotifications();
-    return;
-  }
-
-  if (title == "Chat Ended") {
-    ChatRingTone().stopRingtone();
-    CallKitService.endAllCalls();
-    NotificationService.dismissNotifications();
-
-    // Stop the ringtone loop (Chat background isolate checks this flag)
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('chat_ringing', false);
-
-    await Repository().updateProfile({
-      "isChatAvailable": true,
-      "chatGroupId": "",
-      "isNowAvailable": true,
-    }, []);
-
-    // Save ended userId so the badge is cleared when app resumes
-    final String userId = event.data['userId'] ?? '';
-    if (userId.isNotEmpty) {
-      await prefs.reload();
-      final endedUsers = prefs.getStringList('ended_chat_users') ?? [];
-      if (!endedUsers.contains(userId)) {
-        endedUsers.add(userId);
-      }
-      await prefs.setStringList('ended_chat_users', endedUsers);
-      print("Chat Ended (background): saved userId=$userId to ended_chat_users");
-    }
-
-    return;
-  }
-
-  // Default → simple notification
-  await NotificationService._showSimpleNotification(event);
 }

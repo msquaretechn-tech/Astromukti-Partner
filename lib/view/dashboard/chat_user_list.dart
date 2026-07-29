@@ -89,6 +89,13 @@ class _ChatUserListState extends State<ChatUserList> {
                       v['isChatAvailable'] == false &&
                       v["chatGroupId"] == data["admin"]["_id"];
 
+                  // Always check SharedPreferences first to see if a call is incoming right now
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.reload();
+                  final bool isRinging = prefs.getBool('chat_ringing') ?? false;
+                  final String pendingUserId = prefs.getString('pending_ring_userId') ?? '';
+                  final bool isThisUserRinging = isRinging && pendingUserId == "${data["admin"]["_id"]}";
+
                   // Badge counter > 0 means a notification came for this user
                   final bool hasNewChatNotification = userCounter > 0;
 
@@ -104,28 +111,23 @@ class _ChatUserListState extends State<ChatUserList> {
                         ),
                       ),
                     );
-                  } else if (hasNewChatNotification) {
-                    // Read chat_ringing flag — true = request is still incoming
-                    final prefs = await SharedPreferences.getInstance();
-                    await prefs.reload();
-                    final bool isRinging = prefs.getBool('chat_ringing') ?? false;
-
-                    if (v['isChatAvailable'] == true && isRinging) {
-                      // Active incoming request — accept it
-                      await ChatRingTone().stopRingtone();
-                      await prefs.setBool('chat_ringing', false);
-                      if (context.mounted) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ChatPage(
-                              userDetails: data['admin'],
-                              chatId: data["_id"],
-                            ),
+                  } else if (v['isChatAvailable'] == true && isThisUserRinging) {
+                    // Active incoming request for THIS user — accept it
+                    await ChatRingTone().stopRingtone();
+                    await prefs.setBool('chat_ringing', false);
+                    if (context.mounted) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ChatPage(
+                            userDetails: data['admin'],
+                            chatId: data["_id"],
                           ),
-                        );
-                      }
-                    } else if (v['isChatAvailable'] == false) {
+                        ),
+                      );
+                    }
+                  } else if (hasNewChatNotification) {
+                    if (v['isChatAvailable'] == false) {
                       // Busy with a different user's session
                       Fluttertoast.showToast(
                         msg: "You are already in a chat session",

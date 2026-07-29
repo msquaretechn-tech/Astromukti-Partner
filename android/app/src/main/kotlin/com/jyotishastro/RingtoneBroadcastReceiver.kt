@@ -17,22 +17,16 @@ class RingtoneBroadcastReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        Log.d("RingtoneBroadcastReceiver", "Received action: ${intent.action}")
+        Log.i("RingtoneBroadcastReceiver", "Received action: ${intent.action}")
 
         when (intent.action) {
             ACTION_PLAY -> {
-                val serviceIntent = Intent(context, RingtoneService::class.java).apply {
-                    action = RingtoneService.ACTION_PLAY
-                }
-                context.startService(serviceIntent)
-                Log.d("RingtoneBroadcastReceiver", "RingtoneService START triggered")
+                RingtoneHelper.play(context)
+                Log.i("RingtoneBroadcastReceiver", "RingtoneHelper PLAY triggered")
             }
             ACTION_STOP -> {
-                val serviceIntent = Intent(context, RingtoneService::class.java).apply {
-                    action = RingtoneService.ACTION_STOP
-                }
-                context.startService(serviceIntent)
-                Log.d("RingtoneBroadcastReceiver", "RingtoneService STOP triggered")
+                RingtoneHelper.stop()
+                Log.i("RingtoneBroadcastReceiver", "RingtoneHelper STOP triggered")
             }
         }
     }

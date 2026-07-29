@@ -87,17 +87,11 @@ class MainActivity  : FlutterActivity(){
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "playRingtone" -> {
-                        val intent = Intent(applicationContext, RingtoneService::class.java).apply {
-                            action = RingtoneService.ACTION_PLAY
-                        }
-                        applicationContext.startService(intent)
+                        RingtoneHelper.play(applicationContext)
                         result.success(true)
                     }
                     "stopRingtone" -> {
-                        val intent = Intent(applicationContext, RingtoneService::class.java).apply {
-                            action = RingtoneService.ACTION_STOP
-                        }
-                        applicationContext.startService(intent)
+                        RingtoneHelper.stop()
                         result.success(true)
                     }
                     "isRinging" -> {
