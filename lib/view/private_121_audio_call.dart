@@ -27,6 +27,7 @@ import '../resources/app_url.dart';
 import '../resources/resources.dart';
 import '../resources/string.dart';
 import '../services/notification_service.dart';
+import '../services/call_kit_incoming.dart';
 import 'kundli/kundli.dart';
 
 class Private121AudioCall extends StatefulWidget {
@@ -100,6 +101,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
   bool _hasPlayed15SecAlert = false;
 
   bool isSpeakerEnabled = false;
+  bool _callEnded = false;
   SensorManagement sensorManagement = SensorManagement();
 
   // for kundli , match making user details storage
@@ -215,8 +217,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
           Private121AudioCall.staticRemoteUid = null;
           Private121AudioCall.staticIsJoined = false;
 
-          navigationKey.currentContext?.read<CallTimerBloc>().add(CallEndEvent());
-          Private121AudioCall.leave();
+          _endCallSession(fromRemote: true);
         },
         onError: (ErrorCodeType err, String msg) {
           log("Agora Audio Error: $err, Msg: $msg");
@@ -283,6 +284,14 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
 
   @override
   void dispose() {
+    // Covers the case where this screen is disposed without ever going
+    // through one of the trigger sites above (e.g. the astrologer swipes
+    // away the incoming-call notification, or navigates elsewhere before
+    // answering) - without this, the native in-call notification (started
+    // by CallKitService on accept) never gets cleared.
+    if (!Private121AudioCall.staticIsJoined && !_callEnded) {
+      _endCallSession(fromRemote: true);
+    }
     _audioPlayer.stop();
     _audioPlayer.dispose();
     KeepScreenOn.turnOn(withAllowLockWhileScreenOn: true);
@@ -294,6 +303,43 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
     });
     sensorManagement.stopListening();
     super.dispose();
+  }
+
+  // Shared teardown for every end-of-call trigger (remote hangup, the local
+  // "End Call" dialog, and disposal without ever connecting) - previously
+  // each site duplicated its own mix of availability-PATCH / call_data-clear
+  // / "Call Declined"-push logic, and none of them cleared the native
+  // in-call notification CallKitService starts on accept (found via a real
+  // end-to-end test: the astrologer's phone kept showing a live "Hang Up"
+  // notification after the call had actually ended). Dispatching
+  // CallEndEvent lets the existing CallTimerBloc listener in build() do its
+  // own cleanup (prefs, notification, Private121AudioCall.leave(), pop) when
+  // this screen is still mounted; call leave() directly here only when it
+  // isn't, since nothing else would.
+  void _endCallSession({bool fromRemote = false}) {
+    if (_callEnded) return;
+    _callEnded = true;
+    log("Ending audio call session, fromRemote: $fromRemote");
+
+    CallKitService.endAllCalls();
+
+    if (navigationKey.currentContext != null) {
+      try {
+        navigationKey.currentContext!.read<CallTimerBloc>().add(CallEndEvent());
+      } catch (e) {
+        log("Error dispatching CallEndEvent from navigationKey: $e");
+      }
+    } else if (mounted) {
+      try {
+        context.read<CallTimerBloc>().add(CallEndEvent());
+      } catch (e) {
+        log("Error dispatching CallEndEvent from widget context: $e");
+      }
+    }
+
+    if (!mounted) {
+      Private121AudioCall.leave();
+    }
   }
 
   void toggleSpeaker() async {
@@ -336,26 +382,13 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
             ),
           ),
           ElevatedButton(
-            onPressed: () async {
-              Repository().updateProfile({
-                "isChatAvailable": "true",
-                "isVideoCallAvailable": "true",
-                "isAudioCallAvailable": "true",
-                "isNowAvailable": "true",
-                "isOnline": "true",
-              }, []);
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('call_data');
-              NotificationService.sendNotification(
-                "${widget.mData["extra"]["userFcmToken"]}",
-                "Call Declined",
-                "Call Declined By Astrologer",
-                <String, dynamic>{},
-              );
-              log("ggg ${widget.mData["extra"]["userFcmToken"]}");
-              log("kya haaa ${widget.mData}");
-              Navigator.pop(context, true);
-            },
+            // Previously this duplicated the profile-reset/prefs-clear/
+            // notification logic the CallTimerBloc listener below already
+            // does on CallEndState (with slightly different wording, and
+            // the profile reset happening twice) - Navigator.pop(true) here
+            // just closes the dialog; dispatching CallEndEvent below is
+            // what actually ends the call and runs that cleanup once.
+            onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             child: Text(
               "End",
@@ -367,7 +400,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
     );
 
     if (shouldEndCall == true) {
-      context.read<CallTimerBloc>().add(CallEndEvent());
+      _endCallSession();
     }
   }
 

@@ -469,16 +469,19 @@ class CallKitService {
               ),
             );
           }
+        } else if (event.body["type"].toString() == "1") {
+          // Video call - was previously commented out entirely, so a video
+          // call could never actually be answered on this app. Matches the
+          // audio branch's direct-push style rather than the
+          // addPostFrameCallback wrapper it used to have.
+          if (navigationKey.currentState != null) {
+            navigationKey.currentState?.push(
+              MaterialPageRoute(
+                builder: (context) => Private121VideoCall(mData: event.body),
+              ),
+            );
+          }
         }
-        // else if (event.body["type"].toString() == "1") {
-        //   WidgetsBinding.instance.addPostFrameCallback((_) {
-        //     navigationKey.currentState?.push(
-        //       MaterialPageRoute(
-        //         builder: (context) => Private121VideoCall(mData: event.body),
-        //       ),
-        //     );
-        //   });
-        // }
         /*else if (event.body["type"].toString() == "1") {
           // Chat
           Repository().getUserProfile(event.body["extra"]["userId"]).then((

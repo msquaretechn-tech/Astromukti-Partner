@@ -15,6 +15,7 @@ import '../resources/resources.dart';
 import '../resources/string.dart';
 import '../routes/routes_name.dart';
 import '../services/notification_service.dart';
+import '../services/call_kit_incoming.dart';
 import 'kundli/kundli.dart';
 
 class Private121VideoCall extends StatefulWidget {
@@ -125,6 +126,16 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
 
   Future<void> leave() async {
     _remoteUid = null;
+
+    // The native in-call notification (with its own Hang Up action) is
+    // started by CallKitService on accept, but nothing here was clearing
+    // it - found via a real end-to-end test where the call correctly ended
+    // but the astrologer's phone kept showing a live "On-going call"
+    // notification. leave() is the single place every end-of-call path
+    // (remote hangup, the end-call button, and disposal) already funnels
+    // through, so this one call covers all of them.
+    CallKitService.endAllCalls();
+
     await _engine.leaveChannel();
     await _engine.release();
     // context.read<CallTimerBloc>().add(CallEndEvent());
@@ -194,10 +205,17 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       top: 20,
       right: 20,
       child: BlocConsumer<CallTimerBloc, CallTimerState>(
-        listener: (context, state) {
+        listener: (context, state) async {
           if (state is CallEndState) {
-            _engine.leaveChannel();
-            Navigator.pop(context);
+            // Route through leave() (not a bare engine.leaveChannel()) so
+            // the notification teardown above always fires and to avoid a
+            // second, redundant leaveChannel() call when dispose() runs
+            // leave() again a moment later - that second call is a safe,
+            // idempotent no-op.
+            await leave();
+            if (mounted) {
+              Navigator.pop(context);
+            }
           }
         },
         builder: (context, state) {
