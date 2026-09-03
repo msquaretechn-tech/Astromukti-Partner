@@ -17,6 +17,7 @@ class CallAndChatRate extends StatefulWidget {
 class _CallAndChatRateState extends State<CallAndChatRate> {
   final _callRateController = TextEditingController();
   final _chatRateController = TextEditingController();
+  final _videoCallRateController = TextEditingController();
 
   @override
   void initState() {
@@ -28,6 +29,7 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
   void dispose() {
     _callRateController.dispose();
     _chatRateController.dispose();
+    _videoCallRateController.dispose();
     super.dispose();
   }
 
@@ -76,6 +78,12 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
                     controller: _chatRateController,
                     label: "Chat Rate",
                     icon: Icons.chat,
+                  ),
+                  const SizedBox(height: 15),
+                  _buildField(
+                    controller: _videoCallRateController,
+                    label: "Video Call Rate",
+                    icon: Icons.videocam,
                   ),
                 ],
               ),
@@ -164,6 +172,8 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
                         _rateRow("Audio Call", data.callRate),
                         const Divider(),
                         _rateRow("Chat", data.chatRate),
+                        const Divider(),
+                        _rateRow("Video Call", data.videoCallRate),
 
                         const SizedBox(height: 10),
 
@@ -176,6 +186,8 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
                               "${data.callRate ?? ""}";
                               _chatRateController.text =
                               "${data.chatRate ?? ""}";
+                              _videoCallRateController.text =
+                              "${data.videoCallRate ?? ""}";
                             },
                           ),
                         )
@@ -243,7 +255,8 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
   /// 🔹 Submit Logic
   void _submit() {
     if (_callRateController.text.isEmpty ||
-        _chatRateController.text.isEmpty) {
+        _chatRateController.text.isEmpty ||
+        _videoCallRateController.text.isEmpty) {
       Utils.snackBar("Please enter all rates", context);
       return;
     }
@@ -254,6 +267,7 @@ class _CallAndChatRateState extends State<CallAndChatRate> {
           formData: {
             "callRate": _callRateController.text,
             "chatRate": _chatRateController.text,
+            "videoCallRate": _videoCallRateController.text,
             "fcmToken": token
           },
           files: const [],

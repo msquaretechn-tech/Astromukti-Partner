@@ -103,7 +103,7 @@ class _DashboardState extends State<Dashboard> {
   List<Map<String, dynamic>> nameList = [
     {"image": Resources.images.chatImage, "title": 'ChatList'},
     {"image": Resources.images.callImage, "title": 'Call'},
-    // {"image": Resources.images.videoImage, "title": 'Video'},
+    {"image": Resources.images.videoImage, "title": 'Video'},
     {"image": Resources.images.chatImage, "title": 'Chat History'},
     // {"image": Resources.images.kundliImage, "title": 'Kundli'},
     // {"image": Resources.images.matchMakingImage, "title": 'Match Making'},
@@ -124,8 +124,9 @@ class _DashboardState extends State<Dashboard> {
       case "Call":
         GoRouter.of(context).pushNamed(RoutesName.callScreen, extra: "Call");
         break;
-      // case "Video":
-      //   GoRouter.of(context).pushNamed(RoutesName.callScreen, extra: "Video");
+      case "Video":
+        GoRouter.of(context).pushNamed(RoutesName.callScreen, extra: "Video");
+        break;
       case "Chat History":
         GoRouter.of(context).pushNamed(RoutesName.callScreen, extra: "Chat");
         break;
@@ -486,51 +487,51 @@ class _DashboardState extends State<Dashboard> {
                               ),
                             ),
 
-                            // Transform.scale(
-                            //   scale: 0.6,
-                            //   child: CupertinoSwitch(
-                            //     value: _userVideoCall,
-                            //     onChanged: _userOnline
-                            //         ? (value) {
-                            //             if (!value && !_userChat && !_userCall) {
-                            //               Utils.snackBar(
-                            //                 "At least one mode (Chat, Call or Video) must be ON",
-                            //                 context,
-                            //               );
-                            //               return;
-                            //             }
-                            //
-                            //             setState(() => _userVideoCall = value);
-                            //
-                            //
-                            //
-                            //             Repository()
-                            //                 .updateProfile({
-                            //                   "isVideoCallAvailable":
-                            //                       _userVideoCall,
-                            //                   "isAudioCallAvailable": _userCall,
-                            //                   "isChatAvailable": _userChat,
-                            //                   "isNowAvailable": true,
-                            //                 }, [])
-                            //                 .then((response) {
-                            //                   context.read<AuthBloc>().add(
-                            //                     AuthGetVendorProfileEvent(),
-                            //                   );
-                            //                   Utils.snackBar(
-                            //                     "Video Call mode updated: $_userVideoCall",
-                            //                     context,
-                            //                   );
-                            //                 });
-                            //           }
-                            //         : null,
-                            //   ),
-                            // ),
-                            // Text(
-                            //   "Video",
-                            //   style: Resources.styles.kTextStyle14B(
-                            //     Resources.colors.blackColor,
-                            //   ),
-                            // ),
+                            Transform.scale(
+                              scale: 0.6,
+                              child: CupertinoSwitch(
+                                value: _userVideoCall,
+                                onChanged: _userOnline
+                                    ? (value) {
+                                        if (!value &&
+                                            !_userChat &&
+                                            !_userCall) {
+                                          Utils.snackBar(
+                                            "At least one mode (Chat, Call or Video) must be ON",
+                                            context,
+                                          );
+                                          return;
+                                        }
+
+                                        setState(() => _userVideoCall = value);
+
+                                        Repository()
+                                            .updateProfile({
+                                              "isVideoCallAvailable":
+                                                  _userVideoCall,
+                                              "isAudioCallAvailable": _userCall,
+                                              "isChatAvailable": _userChat,
+                                              "isNowAvailable": true,
+                                            }, [])
+                                            .then((response) {
+                                              context.read<AuthBloc>().add(
+                                                AuthGetVendorProfileEvent(),
+                                              );
+                                              Utils.snackBar(
+                                                "Video Call mode updated: $_userVideoCall",
+                                                context,
+                                              );
+                                            });
+                                      }
+                                    : null,
+                              ),
+                            ),
+                            Text(
+                              "Video",
+                              style: Resources.styles.kTextStyle14B(
+                                Resources.colors.blackColor,
+                              ),
+                            ),
                           ],
                         ),
                       ),
