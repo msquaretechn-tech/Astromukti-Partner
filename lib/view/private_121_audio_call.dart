@@ -181,7 +181,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
     );
     _audioPlayer = AudioPlayer();
     sensorManagement.startListening();
-    KeepScreenOn.turnOn(withAllowLockWhileScreenOn: true);
+    KeepScreenOn.turnOn();
     NotificationService.dismissNotifications();
   }
 
@@ -368,7 +368,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
   void dispose() {
     _audioPlayer.stop();
     _audioPlayer.dispose();
-    KeepScreenOn.turnOn(withAllowLockWhileScreenOn: true);
+    KeepScreenOn.turnOff();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!Private121AudioCall.staticIsJoined) {
         final prefs = await SharedPreferences.getInstance();
