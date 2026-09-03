@@ -299,6 +299,42 @@ class Repository {
     }
   }
 
+  // GET /api/call/:channelId/token - the astrologer side's own RTC token for
+  // an incoming call. Unlike generateRTCToken above, the server issues this
+  // one using its own credentials and the astrologer's pre-assigned agoraUid
+  // for this specific call session (set when the customer called /start) -
+  // the astrologer never calls /start, so this is its only way to get a token.
+  Future<Map<String, dynamic>> getCallToken(String channelId) async {
+    final response = await _apiServices.getApiResponse(
+      "${AppUrl.callBaseUrl}/$channelId/token",
+    );
+    return Map<String, dynamic>.from(response["data"] as Map);
+  }
+
+  // POST /api/call/:channelId/joined - confirms to the server that both
+  // sides are actually connected. Idempotent.
+  Future<void> markCallJoined(String channelId) async {
+    await _apiServices.postApiResponse("${AppUrl.callBaseUrl}/$channelId/joined", {});
+  }
+
+  // POST /api/call/:channelId/heartbeat - periodic "still connected" signal.
+  // Returns {callEnded, reason?} - the server force-ends a call whose
+  // customer has run out of wallet mid-call, rather than letting it run for
+  // free once started. Callers must check callEnded and hang up when true.
+  Future<Map<String, dynamic>> callHeartbeat(String channelId) async {
+    final response = await _apiServices.postApiResponse("${AppUrl.callBaseUrl}/$channelId/heartbeat", {});
+    return Map<String, dynamic>.from(response["data"] as Map);
+  }
+
+  // POST /api/call/:channelId/end - reports the call as over. Idempotent -
+  // ending an already-ended session is a no-op on the server, not an error.
+  Future<void> endCallSession(String channelId, {required String disconnectedBy, String? reason}) async {
+    await _apiServices.postApiResponse("${AppUrl.callBaseUrl}/$channelId/end", {
+      "disconnectedBy": disconnectedBy,
+      if (reason != null) "reason": reason,
+    });
+  }
+
   //Add login hours
   Future<dynamic> addLoginHours(Map<String, dynamic> data) async {
     try {

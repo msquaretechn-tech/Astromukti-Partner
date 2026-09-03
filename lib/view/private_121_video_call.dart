@@ -5,6 +5,7 @@ import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_easyloading/flutter_easyloading.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -19,8 +20,21 @@ import 'kundli/kundli.dart';
 
 class Private121VideoCall extends StatefulWidget {
   final Map<String, dynamic> mData;
+  // Present only when the customer's app called /api/call/start - an
+  // un-updated customer app still rings the old way with none of these, and
+  // _initAgoraLive()/leave() below fall back to the legacy channel/token
+  // scheme.
+  final String? channelId;
+  final String? rtcToken;
+  final int? agoraUid;
 
-  const Private121VideoCall({super.key, required this.mData});
+  const Private121VideoCall({
+    super.key,
+    required this.mData,
+    this.channelId,
+    this.rtcToken,
+    this.agoraUid,
+  });
 
   @override
   State<Private121VideoCall> createState() => _Private121VideoCallState();
@@ -37,6 +51,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
   var dop;
   bool _isMuted = false;
   String channelId = '';
+  Timer? _heartbeatTimer;
   bool _showOverlay = true;
 
   @override
@@ -44,8 +59,8 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
     super.initState();
     log('mData : ${widget.mData["extra"]}');
     log('pankaj : ${widget.mData}');
-    channelId =
-    "${widget.mData["extra"]['vendorId'].toString()}${widget.mData["extra"]['userId'].toString()}";
+    channelId = widget.channelId ??
+        "${widget.mData["extra"]['vendorId'].toString()}${widget.mData["extra"]['userId'].toString()}";
     _initAgoraLive();
     BlocProvider.of<AuthBloc>(context).add(ProfileUpdateEvent(formData: const {
       "isVideoCallAvailable": false,
@@ -75,6 +90,32 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
             _remoteUid = remoteUid;
           });
           context.read<CallTimerBloc>().add(CallStartEvent());
+
+          // Confirms to the server that both sides are actually connected -
+          // idempotent, safe even if the customer's app already triggered
+          // this from their own onUserJoined. No-op for a call from an
+          // un-updated customer app (no channelId, no server-side session).
+          if (widget.channelId != null) {
+            Repository().markCallJoined(widget.channelId!).catchError((e) {
+              log("markCallJoined failed: $e");
+            });
+            _heartbeatTimer?.cancel();
+            _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+              try {
+                final result = await Repository().callHeartbeat(widget.channelId!);
+                // Server force-ends a call once the customer's wallet runs
+                // out mid-call (see call.controller.js) - without this
+                // check the Agora session would just keep running for
+                // free, since nothing else here would notice.
+                if (result['callEnded'] == true) {
+                  Fluttertoast.showToast(msg: "Call ended - customer balance exhausted");
+                  context.read<CallTimerBloc>().add(CallEndEvent());
+                }
+              } catch (e) {
+                log("Heartbeat failed: $e");
+              }
+            });
+          }
         },
         onUserOffline: (RtcConnection connection, int remoteUid,
             UserOfflineReasonType reason) {
@@ -96,14 +137,24 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
     await _engine.enableVideo();
     await _engine.startPreview();
 
-    int uid = math.Random().nextInt(1000000000);
-    var token =
-    await Repository().generateRTCToken(channelId, 'audience', '$uid');
+    String token;
+    int joinUid;
+    if (widget.rtcToken != null && widget.agoraUid != null) {
+      // New flow: token/uid already fetched via GET /api/call/:channelId/token
+      // (see CallKitService's accept handler) before this screen was pushed.
+      token = widget.rtcToken!;
+      joinUid = widget.agoraUid!;
+    } else {
+      // Legacy fallback - a call from an un-updated customer app that never
+      // called /api/call/start, so there's no server-issued token to use.
+      joinUid = math.Random().nextInt(1000000000);
+      token = await Repository().generateRTCToken(channelId, 'audience', '$joinUid');
+    }
 
     await _engine.joinChannel(
       token: token,
       channelId: channelId,
-      uid: uid,
+      uid: joinUid,
       options: const ChannelMediaOptions(),
     );
     dob = widget.mData["extra"]["msg"].split(",")[1];
@@ -125,6 +176,20 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
 
   Future<void> leave() async {
     _remoteUid = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+
+    // Report this call session as over - best effort, mirrors the customer
+    // app's _reportCallEnd(). Only applicable when this call went through
+    // the new session-based flow (channelId present).
+    if (widget.channelId != null) {
+      try {
+        await Repository().endCallSession(widget.channelId!, disconnectedBy: 'vendor');
+      } catch (e) {
+        log("Error ending call session: $e");
+      }
+    }
+
     await _engine.leaveChannel();
     await _engine.release();
     // context.read<CallTimerBloc>().add(CallEndEvent());
@@ -194,10 +259,17 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       top: 20,
       right: 20,
       child: BlocConsumer<CallTimerBloc, CallTimerState>(
-        listener: (context, state) {
+        listener: (context, state) async {
           if (state is CallEndState) {
-            _engine.leaveChannel();
-            Navigator.pop(context);
+            // Route through leave() (not a bare engine.leaveChannel()) so
+            // the server-side session-end report and heartbeat cleanup
+            // above actually fire for every trigger that reaches this
+            // listener - dispose() also calls leave(), which is a safe,
+            // idempotent no-op the second time.
+            await leave();
+            if (mounted) {
+              Navigator.pop(context);
+            }
           }
         },
         builder: (context, state) {

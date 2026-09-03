@@ -460,12 +460,36 @@ class CallKitService {
         //   isConnected: false,
         // );
 
+        // channelId is only present when the call came from an updated
+        // customer app that calls /api/call/start - an un-updated install
+        // still rings the old way, with no channelId at all. Both call
+        // screens fall back to the legacy channel/token scheme when these
+        // are null, so an old customer app calling an updated astrologer
+        // app still works.
+        final String? channelId = event.body["extra"]?["channelId"];
+        String? rtcToken;
+        int? agoraUid;
+        if (channelId != null) {
+          try {
+            final tokenData = await Repository().getCallToken(channelId);
+            rtcToken = tokenData["rtcToken"];
+            agoraUid = tokenData["agoraUid"];
+          } catch (e) {
+            log("Failed to fetch call token for $channelId: $e");
+          }
+        }
+
         if (event.body["type"].toString() == "0") {
           // Audio call
           if (navigationKey.currentState != null) {
             navigationKey.currentState?.push(
               MaterialPageRoute(
-                builder: (context) => Private121AudioCall(mData: event.body),
+                builder: (context) => Private121AudioCall(
+                  mData: event.body,
+                  channelId: channelId,
+                  rtcToken: rtcToken,
+                  agoraUid: agoraUid,
+                ),
               ),
             );
           }

@@ -20,6 +20,7 @@ class AppUrl {
   static var bannerUrl = '$baseUrl/api/banner/';
   static var generateAgoraRtcToken = '$baseUrl/generate-rtc-token/';
   static var generateAgoraChatToken = '$baseUrl/generate-chat-token/';
+  static var callBaseUrl = '$baseUrl/api/call';
   static var loginEmail = '$baseUrl/api/auth/vlogin-email-password/';
   static var vendorRating = '$baseUrl/api/vendor/ratings';
   static var followerUser = '$baseUrl/api/vendor/followers';

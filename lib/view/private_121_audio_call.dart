@@ -31,6 +31,12 @@ import 'kundli/kundli.dart';
 
 class Private121AudioCall extends StatefulWidget {
   final Map<String, dynamic> mData;
+  // Present only when the customer's app called /api/call/start - an
+  // un-updated customer app still rings the old way with none of these, and
+  // join()/leave() below fall back to the legacy channel/token scheme.
+  final String? channelId;
+  final String? rtcToken;
+  final int? agoraUid;
 
   static RtcEngine? staticAgoraEngine;
   static bool staticIsJoined = false;
@@ -40,6 +46,13 @@ class Private121AudioCall extends StatefulWidget {
       ValueNotifier<Map<String, dynamic>?>(null);
   static bool staticIsMuted = false;
   static bool staticIsSpeakerEnabled = false;
+  // Mirrors the other static fields above - leave() is static (it's also
+  // called from main.dart's global CallTimerBloc listener, for when the
+  // astrologer has navigated away from this screen entirely), so the
+  // call-session id and heartbeat timer it needs to clean up have to be
+  // static too, not instance fields.
+  static String? staticChannelId;
+  static Timer? staticHeartbeatTimer;
 
   static const _channel = MethodChannel('com.bookmyastro.app.channel');
 
@@ -69,6 +82,24 @@ class Private121AudioCall extends StatefulWidget {
     Private121AudioCall.staticIsMuted = false;
     Private121AudioCall.staticIsSpeakerEnabled = false;
 
+    Private121AudioCall.staticHeartbeatTimer?.cancel();
+    Private121AudioCall.staticHeartbeatTimer = null;
+
+    // Report this call session as over - best effort, mirrors the customer
+    // app's _reportCallEnd(). Only applicable when this call went through
+    // the new session-based flow (channelId present); a call from an
+    // un-updated customer app never created a server-side CallSession at
+    // all, so there's nothing to report here.
+    final endingChannelId = Private121AudioCall.staticChannelId;
+    if (endingChannelId != null) {
+      Repository()
+          .endCallSession(endingChannelId, disconnectedBy: 'vendor')
+          .catchError((e) {
+        log("Error ending call session: $e");
+      });
+    }
+    Private121AudioCall.staticChannelId = null;
+
     Repository().updateProfile({
       "isChatAvailable": "true",
       "isVideoCallAvailable": "true",
@@ -84,7 +115,13 @@ class Private121AudioCall extends StatefulWidget {
     NotificationService.dismissNotifications();
   }
 
-  const Private121AudioCall({super.key, required this.mData});
+  const Private121AudioCall({
+    super.key,
+    required this.mData,
+    this.channelId,
+    this.rtcToken,
+    this.agoraUid,
+  });
 
   @override
   State<Private121AudioCall> createState() => _Private121AudioCallState();
@@ -115,13 +152,16 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
       Private121AudioCall.staticMData = widget.mData;
       Private121AudioCall.activeCallNotifier.value = widget.mData;
     });
+    Private121AudioCall.staticChannelId = widget.channelId;
 
 
     _isMuted = Private121AudioCall.staticIsMuted;
     isSpeakerEnabled = Private121AudioCall.staticIsSpeakerEnabled;
 
-    channelName =
-    "${widget.mData["extra"]["vendorMobile"] ?? ''}${widget.mData["extra"]["userMobile"] ?? ''}";
+    // channelId (server-generated) when present; falls back to the legacy
+    // mobile-concatenation scheme for a call from an un-updated customer app.
+    channelName = widget.channelId ??
+        "${widget.mData["extra"]["vendorMobile"] ?? ''}${widget.mData["extra"]["userMobile"] ?? ''}";
 
     if (Private121AudioCall.staticAgoraEngine != null && Private121AudioCall.staticIsJoined) {
       log("Resuming existing call session");
@@ -204,6 +244,37 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
 
           // _startCountdownTimer();
           Private121AudioCall.startCallService();
+
+          // Confirms to the server that both sides are actually connected -
+          // idempotent, safe even if the customer's app already triggered
+          // this from their own onUserJoined. No-op for a call from an
+          // un-updated customer app (no channelId, no server-side session).
+          if (Private121AudioCall.staticChannelId != null) {
+            Repository()
+                .markCallJoined(Private121AudioCall.staticChannelId!)
+                .catchError((e) {
+              log("markCallJoined failed: $e");
+            });
+            Private121AudioCall.staticHeartbeatTimer?.cancel();
+            Private121AudioCall.staticHeartbeatTimer =
+                Timer.periodic(const Duration(seconds: 15), (_) async {
+              try {
+                final result = await Repository()
+                    .callHeartbeat(Private121AudioCall.staticChannelId!);
+                // Server force-ends a call once the customer's wallet runs
+                // out mid-call (see call.controller.js) - without this
+                // check the Agora session would just keep running for
+                // free, since nothing else here would notice.
+                if (result['callEnded'] == true) {
+                  Fluttertoast.showToast(msg: "Call ended - customer balance exhausted");
+                  navigationKey.currentContext?.read<CallTimerBloc>().add(CallEndEvent());
+                  Private121AudioCall.leave();
+                }
+              } catch (e) {
+                log("Heartbeat failed: $e");
+              }
+            });
+          }
         },
         onUserOffline:
             (
@@ -244,22 +315,34 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
       channelProfile: ChannelProfileType.channelProfileCommunication,
     );
 
-    var token = await Repository().generateRTCToken(
-      channelName,
-      'publisher',
-      uid.toString(),
-    );
-
-    if (token == null || token.isEmpty) {
-      Fluttertoast.showToast(msg: "Service not available");
-      return;
+    String token;
+    int joinUid;
+    if (widget.rtcToken != null && widget.agoraUid != null) {
+      // New flow: token/uid already fetched via GET /api/call/:channelId/token
+      // (see CallKitService's accept handler) before this screen was pushed.
+      token = widget.rtcToken!;
+      joinUid = widget.agoraUid!;
+    } else {
+      // Legacy fallback - a call from an un-updated customer app that never
+      // called /api/call/start, so there's no server-issued token to use.
+      final fetchedToken = await Repository().generateRTCToken(
+        channelName,
+        'publisher',
+        uid.toString(),
+      );
+      if (fetchedToken == null || fetchedToken.isEmpty) {
+        Fluttertoast.showToast(msg: "Service not available");
+        return;
+      }
+      token = fetchedToken;
+      joinUid = uid;
     }
 
     await Private121AudioCall.staticAgoraEngine!.joinChannel(
       token: token,
       channelId: channelName,
       options: options,
-      uid: uid,
+      uid: joinUid,
     );
 
     debugPrint("Joining channel: $channelName");
