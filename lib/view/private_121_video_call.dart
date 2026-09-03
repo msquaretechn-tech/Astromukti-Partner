@@ -16,6 +16,7 @@ import '../resources/resources.dart';
 import '../resources/string.dart';
 import '../routes/routes_name.dart';
 import '../services/notification_service.dart';
+import '../services/call_kit_incoming.dart';
 import 'kundli/kundli.dart';
 
 class Private121VideoCall extends StatefulWidget {
@@ -190,6 +191,15 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       }
     }
 
+    // The native in-call notification (with its own Hang Up action) is
+    // started by CallKitService on accept, but nothing here was clearing
+    // it - found via a real end-to-end test where the call correctly ended
+    // but the astrologer's phone kept showing a live "On-going call"
+    // notification. leave() is the single place every end-of-call path
+    // (remote hangup, the end-call button, and disposal) already funnels
+    // through, so this one call covers all of them.
+    CallKitService.endAllCalls();
+
     await _engine.leaveChannel();
     await _engine.release();
     // context.read<CallTimerBloc>().add(CallEndEvent());
@@ -262,10 +272,10 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
         listener: (context, state) async {
           if (state is CallEndState) {
             // Route through leave() (not a bare engine.leaveChannel()) so
-            // the server-side session-end report and heartbeat cleanup
-            // above actually fire for every trigger that reaches this
-            // listener - dispose() also calls leave(), which is a safe,
-            // idempotent no-op the second time.
+            // the server-side session-end report, heartbeat cleanup, and
+            // notification teardown above all actually fire for every
+            // trigger that reaches this listener - dispose() also calls
+            // leave(), which is a safe, idempotent no-op the second time.
             await leave();
             if (mounted) {
               Navigator.pop(context);
