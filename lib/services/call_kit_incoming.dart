@@ -497,11 +497,21 @@ class CallKitService {
           // Video call - was previously commented out entirely, so a video
           // call could never actually be answered on this app. Matches the
           // audio branch's direct-push style rather than the
-          // addPostFrameCallback wrapper it used to have.
+          // addPostFrameCallback wrapper it used to have. Also passes the
+          // same session-tracked channelId/rtcToken/agoraUid the audio
+          // branch does - without these the screen falls back to deriving
+          // its own legacy channel name, which would never match the
+          // customer's server-issued channelId and the call would never
+          // actually connect.
           if (navigationKey.currentState != null) {
             navigationKey.currentState?.push(
               MaterialPageRoute(
-                builder: (context) => Private121VideoCall(mData: event.body),
+                builder: (context) => Private121VideoCall(
+                  mData: event.body,
+                  channelId: channelId,
+                  rtcToken: rtcToken,
+                  agoraUid: agoraUid,
+                ),
               ),
             );
           }

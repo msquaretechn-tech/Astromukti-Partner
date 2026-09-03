@@ -297,10 +297,10 @@ class NotificationService {
         return;
       }
 
-      // if (title == "Video Call") {
-      //   CallKitService.showIncoming(mData: event.data, callType: 1);
-      //   return;
-      // }
+      if (title == "Video Call") {
+        CallKitService.showIncoming(mData: event.data, callType: 1);
+        return;
+      }
 
       if (title == "Call Declined") {
         CallKitService.endAllCalls();
@@ -556,6 +556,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage event) async {
 
     if (title == "Audio Call") {
       await CallKitService.showIncoming(mData: event.data, callType: 0);
+      return;
+    }
+
+    if (title == "Video Call") {
+      await CallKitService.showIncoming(mData: event.data, callType: 1);
       return;
     }
 
