@@ -8,6 +8,7 @@ import 'package:flutter_easyloading/flutter_easyloading.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:go_router/go_router.dart';
+import 'package:keep_screen_on/keep_screen_on.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../bloc/auth/auth_bloc.dart';
 import '../bloc/call_timer/call_timer_bloc.dart';
@@ -68,6 +69,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
       "isNowAvailable": false
     }, files: const []));
     NotificationService.dismissNotifications();
+    KeepScreenOn.turnOn();
   }
 
   Future<void> _initAgoraLive() async {
@@ -172,6 +174,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
   @override
   void dispose() {
     super.dispose();
+    KeepScreenOn.turnOff();
     leave();
   }
 
