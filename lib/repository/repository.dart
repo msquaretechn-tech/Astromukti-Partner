@@ -1193,7 +1193,7 @@ class Repository {
   Future<dynamic> endChatSession(String chatId) async {
     try {
       final response = await _apiServices.postApiResponse(
-        "${AppUrl.chatEndPoint}/end/$chatId",
+        "${AppUrl.chatEndPoint}end/$chatId",
         {},
       );
 

@@ -415,6 +415,7 @@ Time: $dobTime
     client.chatManager.removeMessageEvent(
       Resources.strings.chatHandlerUniqueId,
     );
+    client.presenceManager.removeEventHandler(Resources.strings.chatHandlerUniqueId);
     _countdownTimer?.cancel();
     _chatTimerSub?.cancel();
     _scrollController.dispose();
@@ -922,6 +923,35 @@ Time: $dobTime
 
             // Send welcome message if needed when connected
             _checkAndSendWelcomeMessage();
+          }
+
+          // Detect the customer disconnecting abnormally (crash, force-quit,
+          // lost network) - the only other end-of-chat signal is the
+          // END_CHAT_SESSION CMD message, which never arrives in that case.
+          if (_remoteChatId != null && _remoteChatId!.isNotEmpty) {
+            try {
+              client.presenceManager.addEventHandler(
+                Resources.strings.chatHandlerUniqueId,
+                ChatPresenceEventHandler(
+                  onPresenceStatusChanged: (list) {
+                    final wentOffline = list.any((p) =>
+                        p.publisher == _remoteChatId &&
+                        (p.statusDetails?.isEmpty ?? true));
+                    if (wentOffline && mounted) {
+                      context.read<ChatTimerBloc>().add(
+                        ChatEndEvent(userId: widget.userDetails["_id"]),
+                      );
+                    }
+                  },
+                ),
+              );
+              client.presenceManager.subscribe(
+                members: [_remoteChatId!],
+                expiry: 100,
+              );
+            } catch (e) {
+              log("$myLog presenceManager subscribe error: $e");
+            }
           }
         },
         onDisconnected: () {
