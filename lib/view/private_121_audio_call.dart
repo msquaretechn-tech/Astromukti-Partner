@@ -54,6 +54,12 @@ class Private121AudioCall extends StatefulWidget {
   // static too, not instance fields.
   static String? staticChannelId;
   static Timer? staticHeartbeatTimer;
+  // What leave() reports to the server as who ended the call. Defaults to
+  // 'vendor' (covers the manual end-call button and navigating away before
+  // ever connecting - both are the astrologer's own action) - only
+  // onUserOffline (the customer's side actually went away) sets this to
+  // 'user' first, since leave() itself has no way to tell why it's running.
+  static String staticDisconnectedBy = 'vendor';
 
   static const _channel = MethodChannel('com.bookmyastro.app.channel');
 
@@ -92,9 +98,11 @@ class Private121AudioCall extends StatefulWidget {
     // un-updated customer app never created a server-side CallSession at
     // all, so there's nothing to report here.
     final endingChannelId = Private121AudioCall.staticChannelId;
+    final disconnectedBy = Private121AudioCall.staticDisconnectedBy;
+    Private121AudioCall.staticDisconnectedBy = 'vendor';
     if (endingChannelId != null) {
       Repository()
-          .endCallSession(endingChannelId, disconnectedBy: 'vendor')
+          .endCallSession(endingChannelId, disconnectedBy: disconnectedBy)
           .catchError((e) {
         log("Error ending call session: $e");
       });
@@ -287,6 +295,7 @@ class _Private121AudioCallState extends State<Private121AudioCall> {
           log("Remote user uid:$remoteUid left the channel");
           Private121AudioCall.staticRemoteUid = null;
           Private121AudioCall.staticIsJoined = false;
+          Private121AudioCall.staticDisconnectedBy = 'user';
 
           _endCallSession(fromRemote: true);
         },

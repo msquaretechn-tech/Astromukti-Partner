@@ -55,6 +55,11 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
   String channelId = '';
   Timer? _heartbeatTimer;
   bool _showOverlay = true;
+  // What leave() reports to the server as who ended the call. Defaults to
+  // 'vendor' (the end-call button, or disposal before ever connecting - both
+  // the astrologer's own action) - only onUserOffline (the customer's side
+  // actually went away) sets this to 'user' first.
+  String _disconnectedBy = 'vendor';
 
   @override
   void initState() {
@@ -126,6 +131,7 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
           setState(() {
             _remoteUid = null;
           });
+          _disconnectedBy = 'user';
 
           context.read<CallTimerBloc>().add(CallEndEvent());
         },
@@ -188,11 +194,12 @@ class _Private121VideoCallState extends State<Private121VideoCall> {
     // the new session-based flow (channelId present).
     if (widget.channelId != null) {
       try {
-        await Repository().endCallSession(widget.channelId!, disconnectedBy: 'vendor');
+        await Repository().endCallSession(widget.channelId!, disconnectedBy: _disconnectedBy);
       } catch (e) {
         log("Error ending call session: $e");
       }
     }
+    _disconnectedBy = 'vendor';
 
     // The native in-call notification (with its own Hang Up action) is
     // started by CallKitService on accept, but nothing here was clearing
